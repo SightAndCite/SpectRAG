@@ -23,12 +23,12 @@ class LanguageConfig:
 @dataclass
 class EdgeWeights:
     """Per-signal weights for the graph edge combiner. Must sum to 1.0."""
-    semantic:          float = 0.150   # was 0.300 — de-emphasize the embedding-only signal
-    section:           float = 0.200   # was 0.250 — modest trim, still meaningful structure
-    entity:            float = 0.250   # was 0.083 — the orthogonal cross-doc concept signal
-    adjacency:         float = 0.100   # was 0.084 — cheap local-structure prior, kept modest
-    utility_question:  float = 0.280   # was 0.200 — strongest structural signal, boost it
-    citation:          float = 0.020   # was 0.083 — near-zero: ~0% measured coverage on this corpus
+    semantic:          float = 0.150   
+    section:           float = 0.200   
+    entity:            float = 0.250   
+    adjacency:         float = 0.100   
+    utility_question:  float = 0.280   
+    citation:          float = 0.020   
 
     def __post_init__(self) -> None:
         total = (
