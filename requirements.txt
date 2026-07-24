@@ -1,0 +1,55 @@
+# Core ML / vector
+faiss-cpu>=1.7.4
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.3
+
+# Graph
+networkx>=3.2
+neo4j>=5.0
+
+# Ollama Python client (embeddings, utility-question generation)
+ollama>=0.2
+
+# OpenAI Python client (final-answer generator — Stage 5)
+openai>=1.0
+
+# .env loading (OPENAI_API_KEY, etc.)
+python-dotenv>=1.0
+
+# Document parsing
+pdfplumber>=0.11        # PDF text/layout extraction (replaces pypdf)
+beautifulsoup4>=4.12
+python-docx>=1.1
+lxml>=5.0
+
+# Chunking / tokenization
+tiktoken>=0.7           # real token counts for chunk sizing
+langchain-text-splitters>=0.3   # recursive structure-aware splitter
+tenacity>=8.2           # retry/backoff for Ollama embed calls
+spacy>=3.7
+gliner>=0.2
+
+# Language detection
+langdetect>=1.0.9
+
+# BM25 lexical seed fusion (Stage 1)
+rank-bm25>=0.2.2
+
+# generation_eval / evaluation harness (results table, corpus download)
+pandas>=2.0
+openpyxl>=3.1
+huggingface_hub>=0.23
+
+# Post-install steps
+# python -m spacy download en_core_web_lg   # English (default)
+# python -m spacy download xx_core_web_sm   # multilingual fallback (required)
+# Install additional spaCy models for other languages as needed:
+#   python -m spacy download fr_core_news_lg  # French
+#   python -m spacy download de_core_news_lg  # German
+#   python -m spacy download es_core_news_lg  # Spanish
+#   python -m spacy download zh_core_web_sm   # Chinese
+#   python -m spacy download ru_core_news_lg  # Russian
+# ollama pull nomic-embed-text
+# ollama pull llama3.1:8b
+# GLiNER model (urchade/gliner_medium-v2.1) downloads automatically on first run
