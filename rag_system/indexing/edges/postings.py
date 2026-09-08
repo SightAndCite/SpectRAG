@@ -28,6 +28,7 @@ is what lets F12 ablate against today's graph.
 from __future__ import annotations
 
 import logging
+import heapq
 import math
 from collections import defaultdict
 
@@ -117,38 +118,54 @@ def edges_from_postings(
                 trimmed[key] = survivors
         kept = trimmed
 
-    # 3. Accumulate pair scores. Bounded by the df ceiling: at most
-    #    ceiling*(ceiling-1)/2 pairs per key, rather than unbounded.
-    scores: dict[tuple[int, int], float] = defaultdict(float)
+    # 3+4. Accumulate and cap in ONE pass, chunk by chunk.
+    #
+    # The degree cap must be applied DURING accumulation, not after. A ceiling on
+    # document frequency bounds pairs per key, but not their sum: at a ceiling of
+    # 200, every 200 postings can contribute another 19,900 pairs, so a corpus
+    # with millions of postings still builds a pair dict far too large to hold.
+    # Pruning afterwards cannot prevent that — the dict is the thing that OOMs.
+    #
+    # Instead, gather one chunk's neighbours at a time and keep only its top-K
+    # before moving on. Transient memory is then bounded by
+    # max_per_chunk × df_ceiling (the most neighbours one chunk can reach), and
+    # the result by n_chunks × max_neighbors. Neither term is quadratic.
+    by_chunk: dict[int, list[str]] = defaultdict(list)
     for key, idxs in kept.items():
-        w = math.log(n_chunks / true_df[key]) if idf_weighting else 1.0
-        if w <= 0.0:
+        for i in idxs:
+            by_chunk[i].append(key)
+
+    weight = {
+        k: (math.log(n_chunks / true_df[k]) if idf_weighting else 1.0)
+        for k in kept
+    }
+
+    scores: dict[tuple[int, int], float] = {}
+    for i, keys in by_chunk.items():
+        local: dict[int, float] = {}
+        for key in keys:
+            w = weight[key]
+            if w <= 0.0:
+                continue
+            for j in kept[key]:
+                if j != i:
+                    local[j] = local.get(j, 0.0) + w
+        if not local:
             continue
-        for a in range(len(idxs)):
-            ia = idxs[a]
-            for b in range(a + 1, len(idxs)):
-                scores[(ia, idxs[b])] += w
+        if max_neighbors > 0 and len(local) > max_neighbors:
+            # Strongest first, ties by lowest index so the result is deterministic.
+            items = heapq.nlargest(max_neighbors, local.items(),
+                                   key=lambda kv: (kv[1], -kv[0]))
+        else:
+            items = local.items()
+        # An edge survives if EITHER endpoint keeps it, so a rare-but-real link is
+        # not lost because the other end happens to be popular. The score is the
+        # same computed from either side, so writing twice is consistent.
+        for j, s in items:
+            scores[(i, j) if i < j else (j, i)] = s
 
     if not scores:
         return []
-
-    # 4. Degree cap: keep each chunk's strongest neighbours. An edge survives if
-    #    either endpoint keeps it, so a rare-but-real link is not lost because
-    #    the other end happens to be popular.
-    if max_neighbors > 0:
-        adjacency: dict[int, list[tuple[float, int, int]]] = defaultdict(list)
-        for (i, j), s in scores.items():
-            adjacency[i].append((s, j, j))
-            adjacency[j].append((s, i, i))
-        survivors: set[tuple[int, int]] = set()
-        for node, nbrs in adjacency.items():
-            if len(nbrs) > max_neighbors:
-                nbrs = sorted(nbrs, key=lambda t: (-t[0], t[1]))[:max_neighbors]
-            for s, other, _ in nbrs:
-                survivors.add((min(node, other), max(node, other)))
-        scores = {p: s for p, s in scores.items() if p in survivors}
-        if not scores:
-            return []
 
     max_score = max(scores.values())
     edges = [RawEdge(i, j, s / max_score) for (i, j), s in scores.items()]

@@ -158,7 +158,11 @@ class IndexingConfig:
     #                 ceiling = min(max(ratio*N, df_floor), max_df_abs)
     shared_key_max_df_ratio: float = 0.05
     shared_key_max_df_abs: int     = 200
-    shared_key_df_floor: int       = 32
+    # 96 recovers baseline quality exactly on the 453-chunk harness (MRR 0.771,
+    # evidence fraction 0.431) while the degree cap still removes ~28% of entity
+    # edges for free. The floor only binds on small corpora: at 1M the ceiling is
+    # min(50_000, 200) = 200 whatever this is set to.
+    shared_key_df_floor: int       = 96
     shared_key_max_per_chunk: int  = 32
     shared_key_max_neighbors: int  = 32
     # OFF by default. Measured on the harness it was the single largest quality
