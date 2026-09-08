@@ -3,6 +3,7 @@ import logging
 from collections import defaultdict
 from rag_system.models import Chunk
 from rag_system.indexing.edges.base import EdgeExtractor, RawEdge
+from rag_system.indexing.edges.postings import edges_from_postings
 from config import IndexingConfig, LanguageConfig, NERConfig, OllamaConfig, OpenAIConfig
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,12 @@ class EntityEdgeExtractor(EdgeExtractor):
         openai_cfg: OpenAIConfig | None = None,
     ) -> None:
         self._min_freq     = cfg.entity_min_freq
+        self._max_df_ratio = cfg.shared_key_max_df_ratio
+        self._max_df_abs   = cfg.shared_key_max_df_abs
+        self._df_floor     = cfg.shared_key_df_floor
+        self._max_per_chunk = cfg.shared_key_max_per_chunk
+        self._max_neighbors = cfg.shared_key_max_neighbors
+        self._idf          = cfg.shared_key_idf_weighting
         self._log_interval = cfg.entity_log_interval
         self._mode         = cfg.entity_extraction_mode
         if self._mode == "llm_concepts":
@@ -64,17 +71,14 @@ class EntityEdgeExtractor(EdgeExtractor):
                 for term in self._terms(chunk):
                     entity_to_chunks[term].append(i)
 
-        edge_counts: dict[tuple[int, int], float] = {}
-        for chunk_idxs in entity_to_chunks.values():
-            if len(chunk_idxs) < self._min_freq:
-                continue
-            for a in range(len(chunk_idxs)):
-                for b in range(a + 1, len(chunk_idxs)):
-                    key = (chunk_idxs[a], chunk_idxs[b])
-                    edge_counts[key] = edge_counts.get(key, 0.0) + 1.0
-
-        if not edge_counts:
-            return []
-
-        max_count = max(edge_counts.values())
-        return [RawEdge(i, j, count / max_count) for (i, j), count in edge_counts.items()]
+        return edges_from_postings(
+            entity_to_chunks, len(chunks),
+            min_df=self._min_freq,
+            max_df_ratio=self._max_df_ratio,
+            max_df_abs=self._max_df_abs,
+            df_floor=self._df_floor,
+            max_per_chunk=self._max_per_chunk,
+            max_neighbors=self._max_neighbors,
+            idf_weighting=self._idf,
+            label="entity",
+        )

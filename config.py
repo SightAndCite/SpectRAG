@@ -136,6 +136,37 @@ class IndexingConfig:
     concept_llm_max_tokens: int = 200
     concept_cache_dir: str      = "./.concept_cache"
     entity_min_freq: int       = 2    # entity/concept must appear in ≥ N chunks for an edge
+
+    # Bounds for the shared-key signals (entity/concept and citation). Both link
+    # chunks that share a key, and both previously enumerated every pair in every
+    # posting list. Document frequency grows with corpus size, so pairs grow
+    # quadratically: a term in 20% of a 1M-chunk corpus is ~2e10 pairs on its own,
+    # materialised before any thresholding. See edges/postings.py.
+    #   max_df_ratio  keys above this fraction of the corpus are dropped — near-zero
+    #                 IDF, and they are what makes the pair count quadratic.
+    #   max_per_chunk keep only a chunk's rarest keys (a bibliography page emits
+    #                 hundreds of references); 0 = unlimited.
+    #   max_neighbors per-chunk degree cap for this signal; 0 = unlimited.
+    #   idf_weighting weight a shared key by log(N/df) instead of a flat 1.0.
+    # (1.0, 0, 0, False) reproduces the previous unbounded graph exactly.
+    #   max_df_abs    hard ceiling on postings per key. The RATIO alone is the wrong
+    #                 bound for work: 5% of 1M chunks is 50,000 postings, still 1.25e9
+    #                 pairs from one key. Pairs go as df², so the work bound must be
+    #                 absolute; the ratio is the IDF argument, the absolute is the
+    #                 cost argument, and the floor stops a small corpus being
+    #                 over-pruned for no benefit.
+    #                 ceiling = min(max(ratio*N, df_floor), max_df_abs)
+    shared_key_max_df_ratio: float = 0.05
+    shared_key_max_df_abs: int     = 200
+    shared_key_df_floor: int       = 32
+    shared_key_max_per_chunk: int  = 32
+    shared_key_max_neighbors: int  = 32
+    # OFF by default. Measured on the harness it was the single largest quality
+    # cost (first-evidence MRR 0.771 -> 0.698) while bounding nothing: the edge
+    # count is unchanged, it only reweights, so more edges fall under
+    # edge_sparsify_threshold. The caps above are what bound the work. Turn it on
+    # only if F12 measures a gain on a real corpus.
+    shared_key_idf_weighting: bool = False
     entity_log_interval: int   = 50   # log progress every N chunks
 
     # Section edges

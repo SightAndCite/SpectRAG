@@ -101,7 +101,7 @@ class IndexingPipeline:
         if "citation" in self.enabled_signals:
             report("Edges: citation")
             from rag_system.indexing.edges.citation import CitationEdgeExtractor
-            out["citation"] = CitationEdgeExtractor().extract(chunks)
+            out["citation"] = CitationEdgeExtractor(cfg.indexing).extract(chunks)
         return out
 
     def index(
