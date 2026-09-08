@@ -46,3 +46,7 @@ generation_eval/.legal_cache/
 # LightRAG baseline (isolated venv + per-domain working dirs)
 generation_eval/lightrag_env/
 generation_eval/.lightrag_work/
+
+# Scaling work — local planning notes and their regression harness
+fixes_scale.md
+scale_test/
