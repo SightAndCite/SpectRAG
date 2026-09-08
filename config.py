@@ -54,6 +54,15 @@ class IndexingConfig:
     table_extraction: bool          = True
     semantic_breakpoint_percentile: float = 90.0  # sentence-distance percentile → split
 
+    # Which edge signals to build. A signal left out here is never constructed
+    # and never called, so it costs no inference, no pair generation and no
+    # client credentials — a zero edge weight does NOT achieve that, and
+    # EdgeWeights requires the weights to sum to 1.0 anyway. Leave-one-out
+    # ablations set this; the default is every signal, i.e. today's behaviour.
+    enabled_edge_signals: tuple[str, ...] = (
+        "semantic", "adjacency", "section", "entity", "utility_question", "citation",
+    )
+
     # Semantic edges
     semantic_k_neighbors: int    = 7     # k-NN per chunk
     semantic_threshold: float    = 0.75   # cosine similarity floor
@@ -78,6 +87,15 @@ class IndexingConfig:
     #                 L = Σ βₖ·Lₖ, with βₖ = the chosen edge weights. Each layer
     #                 is degree-normalized on its own, so sparse precise signals
     #                 aren't drowned by dense ones.
+    # Skip the global Laplacian solve entirely. At 1M nodes its convergence and
+    # memory are unvalidated, and the LOBPCG failure path falls back to ARPACK
+    # shift-invert, whose factorization fill-in is unbounded at that size.
+    # Disabled, chunks carry no spectral coordinates and Stage 3 falls back to
+    # candidate-local PPR, which is query-specific and incremental-safe.
+    spectral_enabled: bool              = True
+    # Offline K-Means. The default token_budget selector never reads
+    # cluster_label, so this is dead work unless a cluster-aware mode is chosen.
+    clustering_enabled: bool            = True
     spectral_mode: str                  = "combined"
     n_spectral_components: int          = 32
     spectral_large_graph_threshold: int = 50_000  # switch ARPACK → LOBPCG above this

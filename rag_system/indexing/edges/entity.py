@@ -3,7 +3,6 @@ import logging
 from collections import defaultdict
 from rag_system.models import Chunk
 from rag_system.indexing.edges.base import EdgeExtractor, RawEdge
-from rag_system.ner.extractor import HybridNERExtractor
 from config import IndexingConfig, LanguageConfig, NERConfig, OllamaConfig, OpenAIConfig
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,8 @@ class EntityEdgeExtractor(EdgeExtractor):
             self._concept = LLMConceptExtractor(openai_cfg, cfg)
             self._ner = None
         else:
+            # Imported here so llm_concepts mode does not require spaCy.
+            from rag_system.ner.extractor import HybridNERExtractor
             self._ner = HybridNERExtractor(ner_cfg, lang_cfg, ollama_cfg)
             self._concept = None
 
