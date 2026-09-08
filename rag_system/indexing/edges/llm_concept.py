@@ -20,11 +20,11 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from openai import OpenAI
 
+from rag_system.indexing.concurrency import bounded_map
 from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from config import IndexingConfig, OpenAIConfig
 from prompts import CONCEPT_EXTRACTION_PROMPT
@@ -47,6 +47,7 @@ class LLMConceptExtractor:
         self._max_chars = cfg.concept_max_text_chars
         self._max_tokens = cfg.concept_llm_max_tokens
         self._workers = max(1, cfg.llm_parallel_workers)
+        self._in_flight = max(self._workers, cfg.llm_max_in_flight)
         self._max_retries = max(1, cfg.llm_max_retries)
 
         # Transactional keyed store. The previous JSON dict was rewritten whole
@@ -114,23 +115,19 @@ class LLMConceptExtractor:
 
     def extract_batch(self, texts: list[str],
                       progress_cb=None, progress_every: int = 50) -> list[list[str]]:
-        """Concepts for many chunks, LLM calls in parallel. Order preserved."""
-        results: list[list[str]] = [[] for _ in texts]
-        done = 0
-        done_lock = threading.Lock()
+        """Concepts for many chunks, LLM calls bounded and concurrent.
 
-        def _one(i: int) -> None:
-            nonlocal done
-            results[i] = self.extract(texts[i])
-            if progress_cb:
-                with done_lock:
-                    done += 1
-                    if done % progress_every == 0:
-                        progress_cb(done, len(texts))
-
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            list(pool.map(_one, range(len(texts))))
-        return results
+        Order preserved. ThreadPoolExecutor.map submitted the whole corpus, which
+        is one Future per chunk before any work begins; this keeps a fixed number
+        alive instead.
+        """
+        results, self.last_outcome = bounded_map(
+            self.extract, texts,
+            workers=self._workers, in_flight=self._in_flight,
+            stage="concept extraction",
+            on_progress=progress_cb, progress_every=progress_every,
+        )
+        return [r if r is not None else [] for r in results]
 
     def close(self) -> None:
         self._cache.close()

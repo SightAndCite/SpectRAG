@@ -4,7 +4,6 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +14,7 @@ from rag_system.indexing.edges.base import EdgeExtractor, RawEdge
 from rag_system.indexing.embedder import OllamaEmbedder
 from rag_system.language.detector import language_name
 from config import IndexingConfig, OllamaConfig, OpenAIConfig
+from rag_system.indexing.concurrency import bounded_map
 from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from prompts import UTILITY_QUESTION_PROMPT
 
@@ -48,6 +48,7 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
         # sequential (it serializes generations anyway).
         self._workers        = max(1, cfg.llm_parallel_workers) if self._backend == "openai" else 1
         self._max_retries    = max(1, cfg.llm_max_retries)
+        self._in_flight      = max(self._workers, cfg.llm_max_in_flight)
         if self._backend == "openai":
             if openai_cfg is None or not openai_cfg.api_key:
                 raise ValueError("OPENAI_API_KEY required for utility_question_llm_backend='openai'.")
@@ -91,21 +92,17 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
         # Generate questions for each chunk — LLM calls in parallel (OpenAI
         # backend), each with retry/backoff so transient API errors don't
         # silently strip a chunk of its questions.
-        all_questions: list[list[str]] = [[] for _ in chunks]
-        done = 0
-        done_lock = threading.Lock()
+        def _one(chunk) -> list[str]:
+            return self._generate_questions(chunk.text, language_name(chunk.language))
 
-        def _one(i: int) -> None:
-            nonlocal done
-            all_questions[i] = self._generate_questions(
-                chunks[i].text, language_name(chunks[i].language))
-            with done_lock:
-                done += 1
-                if done % self._log_interval == 0:
-                    logger.info("Utility questions: %d / %d chunks", done, len(chunks))
-
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            list(pool.map(_one, range(len(chunks))))
+        results, self.last_outcome = bounded_map(
+            _one, chunks,
+            workers=self._workers, in_flight=self._in_flight,
+            stage="utility questions",
+            on_progress=lambda d, n: logger.info("Utility questions: %d / %d chunks", d, n),
+            progress_every=self._log_interval,
+        )
+        all_questions: list[list[str]] = [r if r is not None else [] for r in results]
 
         self._flush_cache()
 

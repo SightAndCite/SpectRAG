@@ -181,6 +181,9 @@ class IndexingConfig:
     # wall-clock ~Nx. Failed calls retry with exponential backoff (and are NOT
     # cached), so transient 429/5xx errors don't poison the graph or the cache.
     llm_parallel_workers: int  = 8
+    # Tasks kept alive at once. ThreadPoolExecutor.map submits the whole corpus,
+    # which is a Future per chunk before any work starts; this bounds it.
+    llm_max_in_flight: int     = 32
     llm_max_retries: int       = 3
 
 
@@ -335,6 +338,11 @@ class OllamaConfig:
     llm_temperature: float = 0.1
     llm_max_tokens:  int   = 2048
     embed_batch_size: int  = 32
+    # Concurrent embed requests in flight. One batch at a time makes a 3M-vector
+    # pass ~94,000 serialised round-trips, latency-bound regardless of server
+    # speed. Conservative by default so a local single-instance Ollama is not
+    # overwhelmed; raise it against a batching inference server (see F12).
+    embed_max_concurrency: int = 4
     # Disk cache for chunk embeddings, keyed by text hash + model. Unchanged chunks
     # are not re-embedded on a re-index (helps the additive per-session add flow).
     embedding_cache_dir: str = "./.embedding_cache"

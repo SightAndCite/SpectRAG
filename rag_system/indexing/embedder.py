@@ -15,6 +15,7 @@ from tenacity import (
     before_sleep_log,
 )
 from rag_system.models import Chunk
+from rag_system.indexing.concurrency import bounded_imap_batches
 from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from config import OllamaConfig
 
@@ -118,6 +119,21 @@ class OllamaEmbedder:
             )
         return embs
 
+    def _check_dim(self, block: np.ndarray) -> None:
+        """Validate a response block and pin the model's true dimension."""
+        if block.ndim != 2:
+            raise RuntimeError(f"Malformed embeddings, expected 2-D got shape {block.shape}")
+        dim = block.shape[1]
+        if self._dim is None:
+            self._dim = dim
+            if dim != self.cfg.embedding_dim:
+                logger.warning(
+                    "Embedding dim %d differs from configured embedding_dim %d — "
+                    "using the model's actual %d.", dim, self.cfg.embedding_dim, dim,
+                )
+        elif dim != self._dim:
+            raise RuntimeError(f"Embedding dimension changed mid-run: {dim} != {self._dim}")
+
     def embed(self, texts: list[str], kind: str = "document") -> np.ndarray:
         """Return (N, D) float32 array of L2-normalized embeddings.
 
@@ -134,40 +150,31 @@ class OllamaEmbedder:
         # response lists first kept every value alive as a Python float: a
         # 1M-chunk pass is 768M of them, tens of GB, before np.array() ever ran.
         # Only one batch of Python floats is live at a time now.
-        arr: np.ndarray | None = None
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start : start + batch_size]
+        def _run(start: int, batch: list[str]) -> np.ndarray:
             if prefix:
-                batch = [prefix + t for t in batch]
-            block = np.asarray(self._embed_batch(batch), dtype=np.float32)
-            if block.ndim != 2:
-                raise RuntimeError(
-                    f"Malformed embeddings, expected 2-D got shape {block.shape}")
+                batch = [prefix + x for x in batch]
+            return np.asarray(self._embed_batch(batch), dtype=np.float32)
 
-            dim = block.shape[1]
-            if self._dim is None:
-                self._dim = dim
-                if dim != self.cfg.embedding_dim:
-                    logger.warning(
-                        "Embedding dim %d differs from configured embedding_dim %d — "
-                        "using the model's actual %d.", dim, self.cfg.embedding_dim, dim,
-                    )
-            elif dim != self._dim:
-                raise RuntimeError(
-                    f"Embedding dimension changed mid-run: {dim} != {self._dim}"
-                )
+        # The first batch runs alone to establish the true dimension and size the
+        # output array; the rest overlap. Each result carries its own offset, so
+        # ordering is structural rather than something to reassemble.
+        head = _run(0, texts[:batch_size])
+        self._check_dim(head)
+        arr = np.empty((len(texts), head.shape[1]), dtype=np.float32)
+        arr[: head.shape[0]] = head
 
-            if arr is None:
-                arr = np.empty((len(texts), dim), dtype=np.float32)
-            arr[start : start + block.shape[0]] = block
-            logger.debug(
-                "Embedded %d / %d texts",
-                min(start + batch_size, len(texts)),
-                len(texts),
-            )
-
-        if arr is None:
-            return np.empty((0, self._dim or self.cfg.embedding_dim), dtype=np.float32)
+        rest = texts[batch_size:]
+        if rest:
+            done = head.shape[0]
+            for offset, block in bounded_imap_batches(
+                _run, rest, batch_size=batch_size,
+                workers=max(1, self.cfg.embed_max_concurrency),
+            ):
+                self._check_dim(block)
+                start = batch_size + offset
+                arr[start : start + block.shape[0]] = block
+                done += block.shape[0]
+                logger.debug("Embedded %d / %d texts", done, len(texts))
 
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         norms = np.where(norms == 0.0, 1.0, norms)
