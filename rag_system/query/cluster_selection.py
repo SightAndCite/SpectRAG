@@ -105,25 +105,34 @@ class ClusterAwareSelector:
 
         lam = self.mmr_lambda
         selected: list[int] = []
-        selected_emb: list[np.ndarray] = []
         remaining = list(candidate_indices)
+        # Running max similarity to anything already selected. Recomputing this
+        # against every selected vector on every step made the loop O(C·K²·D);
+        # carrying it forward makes it O(C·K·D). Same dot products, same maximum,
+        # just not repeated.
+        redundancy = {gi: 0.0 for gi in candidate_indices}   # nothing selected yet
+        have_selection = False
 
         for _ in range(min(self.final_k, len(candidate_indices))):
             best_gi, best_score = -1, -np.inf
             for gi in remaining:
-                if selected_emb:
-                    emb = chunks[gi].embedding
-                    redundancy = max(float(emb @ e) for e in selected_emb)
-                else:
-                    redundancy = 0.0
-                score = lam * rel_of[gi] - (1.0 - lam) * redundancy
+                score = lam * rel_of[gi] - (1.0 - lam) * redundancy[gi]
                 if score > best_score:
                     best_score, best_gi = score, gi
             if best_gi == -1:
                 break
             selected.append(best_gi)
-            selected_emb.append(chunks[best_gi].embedding)
             remaining.remove(best_gi)
+            chosen_emb = chunks[best_gi].embedding
+            for gi in remaining:
+                sim = float(chunks[gi].embedding @ chosen_emb)
+                # Cosine is signed, so the first selection must SET the running
+                # maximum rather than be max'd against a 0.0 seed — otherwise a
+                # genuinely negative similarity would be floored at zero and the
+                # MMR trade-off would differ from a true max over the selection.
+                if not have_selection or sim > redundancy[gi]:
+                    redundancy[gi] = sim
+            have_selection = True
         return selected
 
     def _encoder(self):
@@ -227,19 +236,42 @@ class ClusterAwareSelector:
         promoted — diversity at ~zero relevance cost."""
         if self.token_tie_band <= 0.0:
             return ranked
-        remaining = list(ranked)  # already sorted by score, descending
+
+        n = len(ranked)
+        score_of = [diffused_scores.get(gi, 0.0) for gi in ranked]   # descending
+        picked = [False] * n
         covered: set[str] = set()
         order: list[int] = []
-        while remaining:
-            best = diffused_scores.get(remaining[0], 0.0)
-            cutoff = best - self.token_tie_band * best
-            band = [gi for gi in remaining if diffused_scores.get(gi, 0.0) >= cutoff]
-            # Prefer uncovered documents; break further ties by higher score.
-            band.sort(key=lambda gi: (chunks[gi].doc_id in covered, -diffused_scores.get(gi, 0.0)))
-            pick = band[0]
-            order.append(pick)
-            covered.add(chunks[pick].doc_id)
-            remaining.remove(pick)
+        head = 0
+
+        while len(order) < n:
+            while picked[head]:
+                head += 1
+            best = score_of[head]
+            # Band width is taken on the magnitude of the top score. Scaling by the
+            # signed score put the cutoff ABOVE `best` whenever it was negative, so
+            # even ranked[head] failed its own filter and the band came back empty
+            # — an IndexError on any query with a negative diffused score, which
+            # plain cosine produces routinely. Identical behaviour for best > 0.
+            cutoff = best - self.token_tie_band * abs(best)
+
+            # `ranked` is score-descending, so the band is a prefix starting at
+            # head; stop at the first score below the cutoff instead of rescanning
+            # every remaining candidate on every iteration.
+            pick = -1
+            j = head
+            while j < n and score_of[j] >= cutoff:
+                if not picked[j]:
+                    if pick == -1:
+                        pick = j                       # best-scoring member, the fallback
+                    if chunks[ranked[j]].doc_id not in covered:
+                        pick = j                       # prefer an uncovered document
+                        break
+                j += 1
+
+            picked[pick] = True
+            order.append(ranked[pick])
+            covered.add(chunks[ranked[pick]].doc_id)
         return order
 
     def _token_budget_select(
@@ -354,19 +386,32 @@ class ClusterAwareSelector:
         rel_of = {gi: float(rel[i]) for i, gi in enumerate(remaining)}
 
         lam = self.mmr_lambda
+        # Seed the running maximum against the protected core, then carry it
+        # forward — see _mmr_select for why this replaces the O(C·K²·D) rescan.
+        # Signed cosine, so seed from the true max over the core (which may be
+        # negative) and only fall back to 0.0 when nothing is selected yet.
+        redundancy = {
+            gi: (max(float(chunks[gi].embedding @ e) for e in selected_emb)
+                 if selected_emb else 0.0)
+            for gi in remaining
+        }
+        have_selection = bool(selected_emb)
         while len(selected) < budget and remaining:
             best_gi, best_score = -1, -np.inf
             for gi in remaining:
-                emb = chunks[gi].embedding
-                redundancy = max(float(emb @ e) for e in selected_emb) if selected_emb else 0.0
-                score = lam * rel_of[gi] - (1.0 - lam) * redundancy
+                score = lam * rel_of[gi] - (1.0 - lam) * redundancy[gi]
                 if score > best_score:
                     best_score, best_gi = score, gi
             if best_gi == -1:
                 break
             selected.append(best_gi)
-            selected_emb.append(chunks[best_gi].embedding)
             remaining.remove(best_gi)
+            chosen_emb = chunks[best_gi].embedding
+            for gi in remaining:
+                sim = float(chunks[gi].embedding @ chosen_emb)
+                if not have_selection or sim > redundancy[gi]:
+                    redundancy[gi] = sim
+            have_selection = True
         return selected
 
     def select(
