@@ -122,39 +122,47 @@ class OllamaEmbedder:
         if not texts:
             return np.empty((0, self._dim or self.cfg.embedding_dim), dtype=np.float32)
 
-        all_embeddings: list[list[float]] = []
         batch_size = self.cfg.embed_batch_size
         prefix = self._prefix(kind)
 
+        # Fill a preallocated float32 array batch by batch. Accumulating the
+        # response lists first kept every value alive as a Python float: a
+        # 1M-chunk pass is 768M of them, tens of GB, before np.array() ever ran.
+        # Only one batch of Python floats is live at a time now.
+        arr: np.ndarray | None = None
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
             if prefix:
                 batch = [prefix + t for t in batch]
-            all_embeddings.extend(self._embed_batch(batch))
+            block = np.asarray(self._embed_batch(batch), dtype=np.float32)
+            if block.ndim != 2:
+                raise RuntimeError(
+                    f"Malformed embeddings, expected 2-D got shape {block.shape}")
+
+            dim = block.shape[1]
+            if self._dim is None:
+                self._dim = dim
+                if dim != self.cfg.embedding_dim:
+                    logger.warning(
+                        "Embedding dim %d differs from configured embedding_dim %d — "
+                        "using the model's actual %d.", dim, self.cfg.embedding_dim, dim,
+                    )
+            elif dim != self._dim:
+                raise RuntimeError(
+                    f"Embedding dimension changed mid-run: {dim} != {self._dim}"
+                )
+
+            if arr is None:
+                arr = np.empty((len(texts), dim), dtype=np.float32)
+            arr[start : start + block.shape[0]] = block
             logger.debug(
                 "Embedded %d / %d texts",
                 min(start + batch_size, len(texts)),
                 len(texts),
             )
 
-        arr = np.array(all_embeddings, dtype=np.float32)
-        if arr.ndim != 2:
-            raise RuntimeError(f"Malformed embeddings, expected 2-D got shape {arr.shape}")
-
-        # Infer the true dimension from the model; warn once if it disagrees with
-        # config, and fail fast on any later dimension drift (e.g. model swap).
-        dim = arr.shape[1]
-        if self._dim is None:
-            self._dim = dim
-            if dim != self.cfg.embedding_dim:
-                logger.warning(
-                    "Embedding dim %d differs from configured embedding_dim %d — "
-                    "using the model's actual %d.", dim, self.cfg.embedding_dim, dim,
-                )
-        elif dim != self._dim:
-            raise RuntimeError(
-                f"Embedding dimension changed mid-run: {dim} != {self._dim}"
-            )
+        if arr is None:
+            return np.empty((0, self._dim or self.cfg.embedding_dim), dtype=np.float32)
 
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         norms = np.where(norms == 0.0, 1.0, norms)

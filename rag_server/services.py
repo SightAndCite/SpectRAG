@@ -149,9 +149,14 @@ class IndexingService:
             IndexingPipeline(job_cfg, graph).index(files, progress_cb=self._set_stage)
             graph.save(self._paths.graph_file(sid))
 
-            chunks, _ = IndexStore(self._paths.session_dir(sid)).load()
+            # Count from the vector file's header rather than loading the whole
+            # index and discarding it — this ran a full load purely for len().
+            store = IndexStore(self._paths.session_dir(sid))
+            count = store.chunk_count()
+            if count is None:                       # legacy index, no vectors.npy
+                count = len(store.load()[0])
             self._sessions.set_index_meta(
-                sid, chunk_count=len(chunks), docs=[p.name for p in files])
+                sid, chunk_count=count, docs=[p.name for p in files])
 
             # Refresh the in-memory cache if this session is the active one.
             self._active.clear(sid)
