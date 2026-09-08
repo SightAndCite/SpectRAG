@@ -24,8 +24,12 @@ class GraphExpander:
         seed_indices: list[int],
         chunks: list[Chunk],
         neo4j_client: Neo4jGraphClient,
+        chunk_id_to_idx: dict[str, int] | None = None,
     ) -> list[int]:
-        chunk_id_to_idx = {c.chunk_id: i for i, c in enumerate(chunks)}
+        # Built once when an index is loaded and passed in; rebuilding it here
+        # cost one dict entry per corpus chunk on every request.
+        if chunk_id_to_idx is None:
+            chunk_id_to_idx = {c.chunk_id: i for i, c in enumerate(chunks)}
         seed_chunk_ids = [chunks[i].chunk_id for i in seed_indices]
 
         expanded_ids = neo4j_client.bfs_expand(

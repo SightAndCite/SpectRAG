@@ -1,4 +1,6 @@
 from __future__ import annotations
+from typing import Mapping
+
 import numpy as np
 from rag_system.models import Chunk
 from config import Config
@@ -30,7 +32,7 @@ class RelevanceDiffuser:
         self,
         candidate_indices: list[int],
         seed_indices: list[int],
-        all_scores: np.ndarray,
+        all_scores: Mapping[int, float],
         chunks: list[Chunk],
     ) -> dict[int, float] | None:
         """Per-candidate cosine proximity to the seeds in Laplacian eigenspace,
@@ -46,7 +48,7 @@ class RelevanceDiffuser:
         norms = np.linalg.norm(S, axis=1, keepdims=True)
         S = S / np.where(norms > 0, norms, 1.0)                # L2-normalised rows
 
-        seed_w = np.array([max(0.0, float(all_scores[i])) for i, _c in kept], dtype=np.float64)
+        seed_w = np.array([max(0.0, float(all_scores.get(i, 0.0))) for i, _c in kept], dtype=np.float64)
         if seed_w.sum() <= 0:
             seed_w = np.ones(len(kept), dtype=np.float64)
         seed_w = seed_w / seed_w.sum()
@@ -106,7 +108,7 @@ class RelevanceDiffuser:
         self,
         candidate_indices: list[int],
         seed_indices: list[int],
-        all_scores: np.ndarray,
+        all_scores: Mapping[int, float],
         chunks: list[Chunk],
         graph=None,
     ) -> dict[int, float]:
@@ -127,7 +129,7 @@ class RelevanceDiffuser:
 
         # If nothing usable, fall back to raw cosine ranking.
         if spectral is None and ppr is None:
-            return {gi: float(all_scores[gi]) for gi in candidate_indices}
+            return {gi: float(all_scores.get(gi, 0.0)) for gi in candidate_indices}
 
         scores: dict[int, float] = {}
         for gi in candidate_indices:
@@ -137,5 +139,5 @@ class RelevanceDiffuser:
                 prox = spectral.get(gi, 0.0)
             else:
                 prox = ppr.get(gi, 0.0)
-            scores[gi] = (1.0 - self._alpha) * float(all_scores[gi]) + self._alpha * prox
+            scores[gi] = (1.0 - self._alpha) * float(all_scores.get(gi, 0.0)) + self._alpha * prox
         return scores

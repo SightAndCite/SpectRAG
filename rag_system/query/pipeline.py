@@ -43,16 +43,24 @@ class QueryPipeline:
         chunks: list[Chunk],
         faiss_index: faiss.Index,
         neo4j_client: Neo4jGraphClient,
+        chunk_id_to_idx: dict[str, int] | None = None,
     ) -> QueryResult:
         logger.info("Stage 1 — seed retrieval")
-        seed_indices, all_scores = self.seed_retriever.retrieve(
-            question, chunks, faiss_index
-        )
+        seed_indices, ctx = self.seed_retriever.retrieve(question, chunks, faiss_index)
         logger.info("  → %d seeds", len(seed_indices))
 
         logger.info("Stage 2 — graph expansion (Neo4j BFS)")
-        candidate_indices = self.expander.expand(seed_indices, chunks, neo4j_client)
+        candidate_indices = self.expander.expand(
+            seed_indices, chunks, neo4j_client, chunk_id_to_idx=chunk_id_to_idx
+        )
         logger.info("  → %d candidates", len(candidate_indices))
+
+        # Score only what stages 3 and 4 actually read. The seed union is
+        # included because diffusion weights each seed by its own relevance.
+        all_scores = self.seed_retriever.score(
+            ctx, chunks, set(candidate_indices) | set(seed_indices)
+        )
+        logger.info("  → scored %d chunks (of %d)", len(all_scores), len(chunks))
 
         # Fetch the candidate subgraph from Neo4j once; stages 3+4 use it as nx.Graph
         candidate_chunk_ids = {chunks[i].chunk_id for i in candidate_indices}

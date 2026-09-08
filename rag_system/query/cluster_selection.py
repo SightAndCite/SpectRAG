@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from typing import Mapping
 import numpy as np
 import networkx as nx
 from sklearn.cluster import KMeans
@@ -372,7 +373,7 @@ class ClusterAwareSelector:
         self,
         candidate_indices: list[int],
         diffused_scores: dict[int, float],
-        all_scores: np.ndarray,
+        all_scores: Mapping[int, float],
         chunks: list[Chunk],
         graph: nx.Graph,
         question: str | None = None,
@@ -423,7 +424,7 @@ class ClusterAwareSelector:
         rel_of = {candidate_indices[li]: float(rel[li]) for li in range(n)}
 
         # Normalise raw query similarity
-        raw = np.clip([all_scores[gi] for gi in candidate_indices], 0.0, None)
+        raw = np.clip([all_scores.get(gi, 0.0) for gi in candidate_indices], 0.0, None)
         raw_max = raw.max()
         if raw_max > 0:
             raw /= raw_max

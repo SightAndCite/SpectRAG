@@ -37,6 +37,9 @@ class ActiveIndex:
         self.faiss_index:  faiss.Index | None        = None
         self.graph:        InMemoryGraphStore | None  = None
         self.pipeline:     QueryPipeline | None       = None
+        # chunk_id -> position, built once per loaded index. Stage 2 used to
+        # rebuild this for the whole corpus on every request.
+        self.chunk_id_to_idx: dict[str, int] | None   = None
         self._lock = threading.Lock()
 
     def _get_pipeline(self) -> QueryPipeline:
@@ -52,6 +55,7 @@ class ActiveIndex:
                 self.chunks = None
                 self.faiss_index = None
                 self.graph = None
+                self.chunk_id_to_idx = None
 
     def ensure_loaded(self, sid: str) -> bool:
         """Load ``sid``'s index into memory (from disk) if not already active.
@@ -64,6 +68,7 @@ class ActiveIndex:
                 self.chunks = None
                 self.faiss_index = None
                 self.graph = None
+                self.chunk_id_to_idx = None
                 return False
             chunks, faiss_index = IndexStore(self._paths.session_dir(sid)).load()
             graph = InMemoryGraphStore()
@@ -72,13 +77,15 @@ class ActiveIndex:
             self.chunks = chunks
             self.faiss_index = faiss_index
             self.graph = graph
+            self.chunk_id_to_idx = {c.chunk_id: i for i, c in enumerate(chunks)}
             self._get_pipeline()
             return True
 
     def query(self, question: str) -> QueryResult:
         """Run the full retrieval + generation pipeline against the active index."""
         return self._get_pipeline().query(
-            question, self.chunks, self.faiss_index, self.graph
+            question, self.chunks, self.faiss_index, self.graph,
+            chunk_id_to_idx=self.chunk_id_to_idx,
         )
 
     def close(self) -> None:
