@@ -15,6 +15,7 @@ from rag_system.indexing.edges.base import EdgeExtractor, RawEdge
 from rag_system.indexing.embedder import OllamaEmbedder
 from rag_system.language.detector import language_name
 from config import IndexingConfig, OllamaConfig, OpenAIConfig
+from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from prompts import UTILITY_QUESTION_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -67,19 +68,24 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
         # language). The filename encodes backend/model/count so a config change
         # never serves mismatched questions. Re-indexing after adding docs only
         # pays the LLM for genuinely new chunks; unchanged chunks are free.
+        # Transactional keyed store; see llm_concept.py for why the whole-file
+        # JSON cache had to go.
         self._cache_dir = Path(cfg.utility_question_cache_dir)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_file = self._cache_dir / (
+        self._legacy = self._cache_dir / (
             f"{self._backend}_{model_tag.replace('/', '_')}_{self._n_questions}q.json"
         )
-        self._cache: dict[str, list[str]] = {}
-        if self._cache_file.exists():
-            try:
-                self._cache = json.loads(self._cache_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                self._cache = {}
-        self._cache_lock = threading.Lock()
-        self._cache_dirty = 0
+        self._cache = KeyValueCache(
+            self._cache_dir / "questions.sqlite3",
+            fingerprint(kind="utility_question", backend=self._backend, model=model_tag,
+                        prompt=UTILITY_QUESTION_PROMPT, n=self._n_questions,
+                        max_chars=self._max_text_chars, max_tokens=self._max_tokens,
+                        temperature=self._temperature),
+        )
+        self._cache.migrate_once(
+            self._legacy,
+            lambda pth: {k: json.dumps(v).encode("utf-8")
+                         for k, v in json.loads(pth.read_text(encoding="utf-8")).items()},
+        )
 
     def extract(self, chunks: list[Chunk]) -> list[RawEdge]:
         # Generate questions for each chunk — LLM calls in parallel (OpenAI
@@ -157,9 +163,9 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
         # Cache key = language + text snippet (questions depend on both). A hit
         # returns without any LLM call.
         key = hashlib.sha256(f"{language}|{snippet}".encode("utf-8")).hexdigest()[:16]
-        with self._cache_lock:
-            if key in self._cache:
-                return list(self._cache[key])
+        hit = self._cache.get(key)
+        if hit is not None:
+            return list(json.loads(hit))
 
         prompt = UTILITY_QUESTION_PROMPT.format(
             n=self._n_questions,
@@ -185,11 +191,7 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
                     )
                     raw = resp.response
                 questions = self._parse_questions(raw, self._n_questions)
-                with self._cache_lock:
-                    self._cache[key] = questions
-                    self._cache_dirty += 1
-                    if self._cache_dirty >= 25:
-                        self._flush_cache_locked()
+                self._cache.put(key, json.dumps(questions).encode("utf-8"))
                 return questions
             except Exception as exc:  # noqa: BLE001 — retry transient API errors
                 last_exc = exc
@@ -201,16 +203,5 @@ class UtilityQuestionEdgeExtractor(EdgeExtractor):
                        self._max_retries, last_exc)
         return []
 
-    def _flush_cache_locked(self) -> None:
-        """Write the question cache to disk. Caller must hold self._cache_lock."""
-        try:
-            tmp = self._cache_file.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(self._cache), encoding="utf-8")
-            tmp.replace(self._cache_file)
-            self._cache_dirty = 0
-        except OSError:
-            pass
-
     def _flush_cache(self) -> None:
-        with self._cache_lock:
-            self._flush_cache_locked()
+        """No-op: every write is already committed."""

@@ -25,6 +25,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from config import IndexingConfig, OpenAIConfig
 from prompts import CONCEPT_EXTRACTION_PROMPT
 
@@ -48,17 +49,26 @@ class LLMConceptExtractor:
         self._workers = max(1, cfg.llm_parallel_workers)
         self._max_retries = max(1, cfg.llm_max_retries)
 
+        # Transactional keyed store. The previous JSON dict was rewritten whole
+        # every 25 additions while holding the lock every worker needed, so
+        # cumulative I/O grew quadratically (~4 TB to fill 1M entries) and a
+        # crash discarded everything since the last flush.
         self._cache_dir = Path(cfg.concept_cache_dir)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_file = self._cache_dir / f"{self._model}.json"
-        self._cache: dict[str, list[str]] = {}
-        if self._cache_file.exists():
-            try:
-                self._cache = json.loads(self._cache_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                self._cache = {}
-        self._dirty = 0
-        self._lock = threading.Lock()  # guards _cache/_dirty across pool threads
+        self._legacy = self._cache_dir / f"{self._model}.json"
+        self._cache = KeyValueCache(
+            self._cache_dir / "concepts.sqlite3",
+            # Prompt and generation settings belong in the key: changing either
+            # previously kept serving results produced under the old ones.
+            fingerprint(kind="concept", model=self._model,
+                        prompt=CONCEPT_EXTRACTION_PROMPT,
+                        max_chars=self._max_chars, max_tokens=self._max_tokens,
+                        temperature=0.0),
+        )
+        self._cache.migrate_once(
+            self._legacy,
+            lambda pth: {k: json.dumps(v).encode("utf-8")
+                         for k, v in json.loads(pth.read_text(encoding="utf-8")).items()},
+        )
 
     def _call_llm(self, snippet: str) -> list[str]:
         """One extraction call with retry/backoff. Raises after final attempt."""
@@ -87,9 +97,9 @@ class LLMConceptExtractor:
         """Concept keys for one chunk (cached by content hash; failures NOT cached)."""
         snippet = text[: self._max_chars]
         key = hashlib.sha256(snippet.encode("utf-8")).hexdigest()[:16]
-        with self._lock:
-            if key in self._cache:
-                return self._cache[key]
+        hit = self._cache.get(key)
+        if hit is not None:
+            return json.loads(hit)
 
         try:
             concepts = self._call_llm(snippet)
@@ -99,11 +109,7 @@ class LLMConceptExtractor:
                            self._max_retries, exc)
             return []
 
-        with self._lock:
-            self._cache[key] = concepts
-            self._dirty += 1
-            if self._dirty >= 25:
-                self._flush_locked()
+        self._cache.put(key, json.dumps(concepts).encode("utf-8"))
         return concepts
 
     def extract_batch(self, texts: list[str],
@@ -126,14 +132,5 @@ class LLMConceptExtractor:
             list(pool.map(_one, range(len(texts))))
         return results
 
-    def _flush_locked(self) -> None:
-        """Write the cache to disk. Caller must hold self._lock."""
-        try:
-            self._cache_file.write_text(json.dumps(self._cache), encoding="utf-8")
-            self._dirty = 0
-        except OSError:
-            pass
-
     def close(self) -> None:
-        with self._lock:
-            self._flush_locked()
+        self._cache.close()

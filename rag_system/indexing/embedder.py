@@ -15,6 +15,7 @@ from tenacity import (
     before_sleep_log,
 )
 from rag_system.models import Chunk
+from rag_system.store.kv_cache import KeyValueCache, fingerprint
 from config import OllamaConfig
 
 logger = logging.getLogger(__name__)
@@ -25,49 +26,53 @@ def _text_hash(text: str) -> str:
 
 
 class _EmbeddingCache:
-    """Content-hash disk cache of chunk embeddings, one file per model.
+    """Content-hash cache of chunk embeddings, backed by SQLite.
 
-    Keyed by the SHA-256 of the chunk text, so re-indexing a corpus after adding
-    documents does not re-embed unchanged chunks. Deterministic: a hit returns the
-    exact vector a fresh embed would produce, so results never change — only the
+    Keyed by the SHA-256 of the chunk text, so re-indexing after adding documents
+    does not re-embed unchanged chunks. Deterministic: a hit returns the exact
+    vector a fresh embed would produce, so results never change — only the
     recompute is skipped.
+
+    Previously one pickle dict, loaded whole and rewritten whole: 3.1 GB in memory
+    at 1M chunks on every index run. Vectors are now stored as raw float32 bytes
+    and read individually.
     """
 
-    def __init__(self, cache_dir: str, model: str) -> None:
+    def __init__(self, cache_dir: str, model: str, dim: int | None = None) -> None:
         self._dir = Path(cache_dir)
-        self._dir.mkdir(parents=True, exist_ok=True)
-        # Model in the filename so switching embedders never serves stale vectors.
-        self._file = self._dir / f"{model.replace('/', '_')}.pkl"
-        self._cache: dict[str, np.ndarray] = {}
-        if self._file.exists():
-            try:
-                with open(self._file, "rb") as fh:
-                    self._cache = pickle.load(fh)
-            except Exception:  # noqa: BLE001 — a corrupt cache must not abort indexing
-                self._cache = {}
-        self._dirty = False
+        self._legacy = self._dir / f"{model.replace('/', '_')}.pkl"
+        # Model in the namespace so switching embedders never serves stale vectors.
+        self._cache = KeyValueCache(
+            self._dir / "embeddings.sqlite3",
+            fingerprint(kind="embedding", model=model),
+        )
+        self._cache.migrate_once(self._legacy, self._decode_legacy)
+
+    @staticmethod
+    def _decode_legacy(path: Path) -> dict[str, bytes]:
+        with open(path, "rb") as fh:
+            old = pickle.load(fh)
+        return {k: np.asarray(v, dtype=np.float32).tobytes() for k, v in old.items()}
 
     def __contains__(self, key: str) -> bool:
         return key in self._cache
 
     def get(self, key: str) -> np.ndarray | None:
-        return self._cache.get(key)
+        raw = self._cache.get(key)
+        return None if raw is None else np.frombuffer(raw, dtype=np.float32)
 
     def put(self, key: str, vec: np.ndarray) -> None:
-        self._cache[key] = np.asarray(vec, dtype=np.float32)
-        self._dirty = True
+        self._cache.put(key, np.asarray(vec, dtype=np.float32).tobytes())
+
+    def put_many(self, items) -> None:
+        self._cache.put_many(
+            (k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in items)
 
     def flush(self) -> None:
-        if not self._dirty:
-            return
-        try:
-            tmp = self._file.with_suffix(".pkl.tmp")
-            with open(tmp, "wb") as fh:
-                pickle.dump(self._cache, fh, protocol=5)
-            tmp.replace(self._file)
-            self._dirty = False
-        except OSError:
-            pass
+        """No-op: every write is already committed."""
+
+    def close(self) -> None:
+        self._cache.close()
 
 
 class OllamaEmbedder:
@@ -187,9 +192,8 @@ class OllamaEmbedder:
 
         if miss_idx:
             miss_embs = self.embed([chunks[i].text for i in miss_idx], kind="document")
-            for pos, i in enumerate(miss_idx):
-                self._emb_cache.put(keys[i], miss_embs[pos])
-            self._emb_cache.flush()
+            self._emb_cache.put_many(
+                (keys[i], miss_embs[pos]) for pos, i in enumerate(miss_idx))
             logger.info(
                 "Embeddings: %d computed, %d reused from cache",
                 len(miss_idx), len(chunks) - len(miss_idx),
