@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import faiss
 from rag_system.models import Chunk
+from rag_system.store.lexical_index import LexicalIndex
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ class IndexStore:
 
         faiss.write_index(faiss_index, str(self.path / _FAISS_FILE))
 
+        # Inverted index for BM25, built once here rather than reconstructed from
+        # the whole corpus inside the first query after every restart.
+        LexicalIndex.build([c.text for c in chunks]).save(
+            self.path / LexicalIndex.directory_name())
+
         # spectral_coords stay a Chunk field inside chunks.pkl. The old side file
         # was reloaded by absolute position, which silently misaligned coords onto
         # the wrong chunks if any chunk lacked coords (see CASE-08).
@@ -105,6 +111,10 @@ class IndexStore:
 
         logger.info("IndexStore loaded: %d chunks from %s", len(chunks), self.path)
         return chunks, faiss_index
+
+    def load_lexical(self) -> LexicalIndex | None:
+        """Persisted inverted index, or None for an index built before F2."""
+        return LexicalIndex.load(self.path / LexicalIndex.directory_name())
 
     def chunk_count(self) -> int | None:
         """Number of chunks, read from the vector file's header.

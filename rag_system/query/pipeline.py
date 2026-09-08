@@ -44,9 +44,12 @@ class QueryPipeline:
         faiss_index: faiss.Index,
         neo4j_client: Neo4jGraphClient,
         chunk_id_to_idx: dict[str, int] | None = None,
+        lexical=None,
     ) -> QueryResult:
         logger.info("Stage 1 — seed retrieval")
-        seed_indices, ctx = self.seed_retriever.retrieve(question, chunks, faiss_index)
+        seed_indices, ctx = self.seed_retriever.retrieve(
+            question, chunks, faiss_index, lexical=lexical
+        )
         logger.info("  → %d seeds", len(seed_indices))
 
         logger.info("Stage 2 — graph expansion (Neo4j BFS)")

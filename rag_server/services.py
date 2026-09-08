@@ -40,6 +40,8 @@ class ActiveIndex:
         # chunk_id -> position, built once per loaded index. Stage 2 used to
         # rebuild this for the whole corpus on every request.
         self.chunk_id_to_idx: dict[str, int] | None   = None
+        # Inverted index published at build time, so no request rebuilds it.
+        self.lexical = None
         self._lock = threading.Lock()
 
     def _get_pipeline(self) -> QueryPipeline:
@@ -56,6 +58,7 @@ class ActiveIndex:
                 self.faiss_index = None
                 self.graph = None
                 self.chunk_id_to_idx = None
+                self.lexical = None
 
     def ensure_loaded(self, sid: str) -> bool:
         """Load ``sid``'s index into memory (from disk) if not already active.
@@ -69,8 +72,11 @@ class ActiveIndex:
                 self.faiss_index = None
                 self.graph = None
                 self.chunk_id_to_idx = None
+                self.lexical = None
                 return False
-            chunks, faiss_index = IndexStore(self._paths.session_dir(sid)).load()
+            store = IndexStore(self._paths.session_dir(sid))
+            chunks, faiss_index = store.load()
+            self.lexical = store.load_lexical()
             graph = InMemoryGraphStore()
             graph.load(self._paths.graph_file(sid))
             self.sid = sid
@@ -86,6 +92,7 @@ class ActiveIndex:
         return self._get_pipeline().query(
             question, self.chunks, self.faiss_index, self.graph,
             chunk_id_to_idx=self.chunk_id_to_idx,
+            lexical=self.lexical,
         )
 
     def close(self) -> None:

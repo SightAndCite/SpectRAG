@@ -9,12 +9,7 @@ from rag_system.models import Chunk
 from rag_system.indexing.embedder import OllamaEmbedder
 from config import Config
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-
-def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens for BM25 (lexical, no stemming)."""
-    return _TOKEN_RE.findall(text.lower())
+from rag_system.store.lexical_index import LexicalIndex, tokenize as _tokenize
 
 
 @dataclass(frozen=True)
@@ -28,7 +23,7 @@ class QueryContext:
     """
     q_emb: np.ndarray                  # (1, D), L2-normalized
     dense_max: float                   # corpus max cosine, for the hybrid blend
-    bm25_tokens: list[str] | None
+    bm25_scores: np.ndarray | None     # (N,) BM25, computed once per request
     bm25_max: float
     hybrid_weight: float               # 0.0 when the lexical blend does not apply
 
@@ -129,19 +124,24 @@ class SeedRetriever:
                 break
         return ranked
 
-    def _build_bm25(self, chunks: list[Chunk]) -> bool:
-        """Build a BM25 index over chunk texts (cached until the corpus changes)."""
+    def _lexical_index(self, chunks: list[Chunk],
+                       provided: LexicalIndex | None) -> LexicalIndex | None:
+        """The persisted inverted index, or one built in memory as a fallback.
+
+        Serving passes the index published at build time, so no corpus work
+        happens on a request. The CLI and tests may not, in which case one is
+        built once and cached — still an inverted index rather than rank-bm25,
+        which held the tokenised corpus plus a frequency dict per document
+        (~15 kB per chunk, about 15 GB at 1M).
+        """
+        if provided is not None:
+            return provided
         key = self._corpus_key(chunks)
-        if self._bm25_key == key:
-            return self._bm25 is not None
-        self._bm25_key = key
-        self._bm25 = None
-        from rank_bm25 import BM25Okapi
-        corpus = [_tokenize(c.text) for c in chunks]
-        if not any(corpus):
-            return False
-        self._bm25 = BM25Okapi(corpus)
-        return True
+        if self._bm25_key == key and self._bm25 is not None:
+            return self._bm25
+        built = LexicalIndex.build([c.text for c in chunks])
+        self._bm25, self._bm25_key = built, key
+        return built
 
     @staticmethod
     def _top_k(scores: np.ndarray, k: int) -> np.ndarray:
@@ -168,6 +168,7 @@ class SeedRetriever:
         query: str,
         chunks: list[Chunk],
         faiss_index: faiss.Index,
+        lexical: LexicalIndex | None = None,
     ) -> tuple[list[int], QueryContext]:
         """
         Returns:
@@ -194,25 +195,25 @@ class SeedRetriever:
         # Hybrid lexical relevance: normalized BM25 is folded into the relevance
         # score so lexical precision reaches Stage-3 diffusion and Stage-4
         # selection, not just the seed choice.
-        bm25_tokens: list[str] | None = None
+        bm25_full: np.ndarray | None = None
         bm25_max = 0.0
         bm25_rank: list[int] = []
-        if self.bm25_enabled and self._build_bm25(chunks):
-            bm25_tokens = _tokenize(query)
-            # One pass, reused for both the seed ranking and the exact corpus
-            # maximum. It was previously computed twice per request.
-            bm25_full = np.asarray(self._bm25.get_scores(bm25_tokens), dtype=np.float64)
+        lex = self._lexical_index(chunks, lexical) if self.bm25_enabled else None
+        if lex is not None:
+            # One pass over the postings of the query's terms, reused for the seed
+            # ranking, the exact corpus maximum, and candidate scoring.
+            bm25_full = lex.scores(_tokenize(query))
             bm25_rank = self._bm25_ranking(bm25_full)
             bm25_max = float(np.clip(bm25_full, 0.0, None).max()) if bm25_full.size else 0.0
 
         ctx = QueryContext(
             q_emb=q_emb,
             dense_max=dense_max,
-            bm25_tokens=bm25_tokens,
+            bm25_scores=bm25_full,
             bm25_max=bm25_max,
             # A zero maximum means the query matched nothing lexically; the old
             # full-vector path returned None there and skipped the blend entirely.
-            hybrid_weight=self.hybrid_lex_w if (bm25_tokens and bm25_max > 0) else 0.0,
+            hybrid_weight=self.hybrid_lex_w if (bm25_full is not None and bm25_max > 0) else 0.0,
         )
 
         # Fuse dense with the utility-question and BM25 rankings (whichever are
@@ -251,8 +252,7 @@ class SeedRetriever:
         if ctx.hybrid_weight <= 0.0:
             return {i: float(s) for i, s in zip(idx, dense)}
 
-        lex = np.asarray(self._bm25.get_batch_scores(ctx.bm25_tokens, idx), dtype=np.float64)
-        lex = np.clip(lex, 0.0, None) / ctx.bm25_max
+        lex = np.clip(ctx.bm25_scores[idx], 0.0, None) / ctx.bm25_max
         dense_n = dense / ctx.dense_max if ctx.dense_max > 0 else dense
         blended = (1.0 - ctx.hybrid_weight) * dense_n + ctx.hybrid_weight * lex
         return {i: float(s) for i, s in zip(idx, blended)}
