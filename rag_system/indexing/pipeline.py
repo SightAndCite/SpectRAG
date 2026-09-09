@@ -198,7 +198,7 @@ class IndexingPipeline:
         # 7. Persist chunks + FAISS to disk
         _report("Saving index…")
         store = IndexStore(self.cfg.store_path)
-        store.save(all_chunks, faiss_index)
+        store.save(all_chunks, faiss_index, embedder=self.embedder)
 
         _report(
             f"Done — {len(all_chunks)} chunks, "

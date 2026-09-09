@@ -42,6 +42,7 @@ class ActiveIndex:
         self.chunk_id_to_idx: dict[str, int] | None   = None
         # Inverted index published at build time, so no request rebuilds it.
         self.lexical = None
+        self.questions = None
         self._lock = threading.Lock()
 
     def _get_pipeline(self) -> QueryPipeline:
@@ -59,6 +60,7 @@ class ActiveIndex:
                 self.graph = None
                 self.chunk_id_to_idx = None
                 self.lexical = None
+                self.questions = None
 
     def ensure_loaded(self, sid: str) -> bool:
         """Load ``sid``'s index into memory (from disk) if not already active.
@@ -73,10 +75,12 @@ class ActiveIndex:
                 self.graph = None
                 self.chunk_id_to_idx = None
                 self.lexical = None
+                self.questions = None
                 return False
             store = IndexStore(self._paths.session_dir(sid))
             chunks, faiss_index = store.load()
             self.lexical = store.load_lexical()
+            self.questions = store.load_questions(self._cfg.ollama.embedding_model)
             graph = InMemoryGraphStore()
             graph.load(self._paths.graph_file(sid))
             self.sid = sid
@@ -93,6 +97,7 @@ class ActiveIndex:
             question, self.chunks, self.faiss_index, self.graph,
             chunk_id_to_idx=self.chunk_id_to_idx,
             lexical=self.lexical,
+            questions=self.questions,
         )
 
     def close(self) -> None:

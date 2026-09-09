@@ -45,10 +45,11 @@ class QueryPipeline:
         neo4j_client: Neo4jGraphClient,
         chunk_id_to_idx: dict[str, int] | None = None,
         lexical=None,
+        questions=None,
     ) -> QueryResult:
         logger.info("Stage 1 — seed retrieval")
         seed_indices, ctx = self.seed_retriever.retrieve(
-            question, chunks, faiss_index, lexical=lexical
+            question, chunks, faiss_index, lexical=lexical, questions=questions
         )
         logger.info("  → %d seeds", len(seed_indices))
 

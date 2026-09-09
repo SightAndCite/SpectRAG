@@ -10,6 +10,7 @@ from rag_system.indexing.embedder import OllamaEmbedder
 from config import Config
 
 from rag_system.store.lexical_index import LexicalIndex, tokenize as _tokenize
+from rag_system.store.question_index import QuestionIndex
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,7 @@ class SeedRetriever:
         self.bm25_k = rc.bm25_seed_k
         self.hybrid_lex_w = rc.hybrid_lexical_weight
         # Utility-question FAISS index, rebuilt when the corpus changes.
-        self._uq_index: faiss.Index | None = None
-        self._uq_to_chunk: list[int] = []
+        self._uq_index: QuestionIndex | None = None
         self._uq_key: tuple | None = None
         # BM25 lexical index, rebuilt when the corpus changes.
         self._bm25 = None
@@ -77,46 +77,39 @@ class SeedRetriever:
                 scores[idx] = scores.get(idx, 0.0) + 1.0 / (self.rrf_k + rank + 1)
         return [i for i, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
 
-    def _build_uq_index(self, chunks: list[Chunk]) -> bool:
-        """Embed every chunk's utility questions into one FAISS index (cached)."""
+    def _question_index(self, chunks: list[Chunk],
+                        provided: QuestionIndex | None) -> QuestionIndex | None:
+        """The persisted question index, or one built in memory as a fallback.
+
+        Serving passes the artifact published at build time, so no request embeds
+        anything. The fallback covers the CLI and indexes built before F13; it
+        assigns the built index before publishing its key, so a concurrent caller
+        can never observe the key without the artifact and silently drop the
+        signal — the shape of bug F11 describes.
+        """
+        if provided is not None:
+            return provided
         key = self._corpus_key(chunks)
         if self._uq_key == key:
-            return self._uq_index is not None
+            return self._uq_index
+        built = QuestionIndex.build(chunks, self.embedder, prefix_role="query")
+        self._uq_index = built
+        self._uq_key = key            # published only after the artifact exists
+        return built
 
-        self._uq_key = key
-        self._uq_index = None
-        self._uq_to_chunk = []
-
-        questions: list[str] = []
-        mapping: list[int] = []
-        for ci, c in enumerate(chunks):
-            for q in c.utility_questions:
-                questions.append(q)
-                mapping.append(ci)
-
-        if not questions:
-            return False
-
-        # Embed as queries so user-query ↔ utility-question stays symmetric.
-        q_embs = self.embedder.embed(questions, kind="query")
-        index = faiss.IndexFlatIP(q_embs.shape[1])
-        index.add(q_embs.astype(np.float32))
-        self._uq_index = index
-        self._uq_to_chunk = mapping
-        return True
-
-    def _uq_seed_ranking(self, q_emb: np.ndarray, chunks: list[Chunk]) -> list[int]:
+    def _uq_seed_ranking(self, q_emb: np.ndarray, chunks: list[Chunk],
+                         provided: QuestionIndex | None) -> list[int]:
         """Chunk indices ranked by best matching utility question (dedup, best rank)."""
-        if not self._build_uq_index(chunks):
+        qi = self._question_index(chunks, provided)
+        if qi is None or len(qi) == 0:
             return []
-        n = min(self.uq_k * 4, len(self._uq_to_chunk))   # over-fetch; dedup to chunks
-        _, idx_arr = self._uq_index.search(q_emb, n)
+        n = min(self.uq_k * 4, len(qi))          # over-fetch; dedup to chunks
         seen: set[int] = set()
         ranked: list[int] = []
-        for qi in idx_arr[0]:
-            if qi < 0:
+        for row in qi.search(q_emb, n)[0]:
+            if row < 0:
                 continue
-            ci = self._uq_to_chunk[qi]
+            ci = int(qi.to_chunk[row])
             if ci not in seen:
                 seen.add(ci)
                 ranked.append(ci)
@@ -169,6 +162,7 @@ class SeedRetriever:
         chunks: list[Chunk],
         faiss_index: faiss.Index,
         lexical: LexicalIndex | None = None,
+        questions: QuestionIndex | None = None,
     ) -> tuple[list[int], QueryContext]:
         """
         Returns:
@@ -220,7 +214,7 @@ class SeedRetriever:
         # enabled and non-empty) via Reciprocal Rank Fusion.
         ranked_lists = [dense_rank]
         if self.uq_enabled:
-            uq_rank = self._uq_seed_ranking(q_emb, chunks)
+            uq_rank = self._uq_seed_ranking(q_emb, chunks, questions)
             if uq_rank:
                 ranked_lists.append(uq_rank)
         if bm25_rank:

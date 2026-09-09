@@ -7,12 +7,19 @@ import numpy as np
 import faiss
 from rag_system.models import Chunk
 from rag_system.store.lexical_index import LexicalIndex
+from rag_system.store.question_index import QuestionIndex
 
 logger = logging.getLogger(__name__)
 
 _CHUNKS_FILE  = "chunks.pkl"
 _FAISS_FILE   = "faiss.index"
 _VECTORS_FILE = "vectors.npy"
+
+# Prefix role the persisted question vectors carry. "query" preserves what the
+# serving path already did, so persisting them changes no result. Edge
+# construction embeds the same strings as documents; unifying the two is a
+# measurable retrieval change and belongs with F12.
+_UQ_PREFIX_ROLE = "query"
 
 
 class IndexStore:
@@ -34,7 +41,8 @@ class IndexStore:
     def __init__(self, store_path: Path | str) -> None:
         self.path = Path(store_path)
 
-    def save(self, chunks: list[Chunk], faiss_index: faiss.Index) -> None:
+    def save(self, chunks: list[Chunk], faiss_index: faiss.Index,
+             embedder=None) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
 
         missing = [c.chunk_id for c in chunks if c.embedding is None]
@@ -66,6 +74,17 @@ class IndexStore:
         # the whole corpus inside the first query after every restart.
         LexicalIndex.build([c.text for c in chunks]).save(
             self.path / LexicalIndex.directory_name())
+
+        # Utility-question search index, likewise built once. Constructing it in
+        # the first query meant embedding every stored question while a user
+        # waited: 2M embeddings and 6.14 GB at 1M chunks.
+        if embedder is not None:
+            qi = QuestionIndex.build(
+                chunks, embedder, prefix_role=_UQ_PREFIX_ROLE,
+                model=getattr(getattr(embedder, "cfg", None), "embedding_model", ""),
+            )
+            if qi is not None:
+                qi.save(self.path / QuestionIndex.directory_name())
 
         # spectral_coords stay a Chunk field inside chunks.pkl. The old side file
         # was reloaded by absolute position, which silently misaligned coords onto
@@ -111,6 +130,13 @@ class IndexStore:
 
         logger.info("IndexStore loaded: %d chunks from %s", len(chunks), self.path)
         return chunks, faiss_index
+
+    def load_questions(self, model: str = "") -> QuestionIndex | None:
+        """Persisted utility-question index, or None if absent or role-mismatched."""
+        return QuestionIndex.load(
+            self.path / QuestionIndex.directory_name(),
+            expect_role=_UQ_PREFIX_ROLE, expect_model=model,
+        )
 
     def load_lexical(self) -> LexicalIndex | None:
         """Persisted inverted index, or None for an index built before F2."""
