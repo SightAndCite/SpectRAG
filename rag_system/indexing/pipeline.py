@@ -131,7 +131,10 @@ class IndexingPipeline:
         # 2. Embed
         _report(f"Embedding {len(all_chunks)} chunks…")
         self.embedder.embed_chunks(all_chunks)
-        faiss_index = self.embedder.build_faiss_index(all_chunks)
+        ic = self.cfg.indexing
+        faiss_index = self.embedder.build_faiss_index(
+            all_chunks, index_type=ic.vector_index_type, m=ic.hnsw_m,
+            ef_construction=ic.hnsw_ef_construction, ef_search=ic.hnsw_ef_search)
         _report("Embedding done")
 
         # 3. Edge signals — only the enabled ones are constructed or run.
@@ -197,7 +200,7 @@ class IndexingPipeline:
 
         # 7. Persist chunks + FAISS to disk
         _report("Saving index…")
-        store = IndexStore(self.cfg.store_path)
+        store = IndexStore(self.cfg.store_path, self.cfg.indexing)
         store.save(all_chunks, faiss_index, embedder=self.embedder)
 
         _report(

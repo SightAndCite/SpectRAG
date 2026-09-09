@@ -67,6 +67,20 @@ class IndexingConfig:
     semantic_k_neighbors: int    = 7     # k-NN per chunk
     semantic_threshold: float    = 0.75   # cosine similarity floor
 
+    # Vector index for the chunk and utility-question search indexes.
+    #   "flat" — exhaustive inner product. Exact, but single-query latency grows
+    #            linearly: ~2.1 ms at 50K, 20.8 ms at 500K, ~42 ms at 1M, which is
+    #            ~24 q/s of total capacity for vector search alone.
+    #   "hnsw" — flat in corpus size (0.27 ms at 500K) but APPROXIMATE. Recall
+    #            depends on vector geometry: at 200K, recall@20 was 1.000 on
+    #            clustered vectors and 0.361 on isotropic ones.
+    # Default stays "flat" until recall is measured on the real encoder (F12).
+    # Note HNSW cannot delete vectors, which F16's tombstones will need.
+    vector_index_type: str      = "flat"
+    hnsw_m: int                 = 32
+    hnsw_ef_construction: int   = 200
+    hnsw_ef_search: int         = 128   # applied on load, so it is tunable without a rebuild
+
     # Graph sparsification
     edge_sparsify_threshold: float = 0.1 # drop combined edges below this weight
 

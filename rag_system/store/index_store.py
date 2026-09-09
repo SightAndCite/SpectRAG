@@ -8,6 +8,7 @@ import faiss
 from rag_system.models import Chunk
 from rag_system.store.lexical_index import LexicalIndex
 from rag_system.store.question_index import QuestionIndex
+from rag_system.store.vector_index import apply_search_params, describe
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,12 @@ class IndexStore:
     actually touched — and retrieval only touches its candidates, not the corpus.
     """
 
-    def __init__(self, store_path: Path | str) -> None:
+    def __init__(self, store_path: Path | str, indexing_cfg=None) -> None:
         self.path = Path(store_path)
+        if indexing_cfg is None:
+            from config import IndexingConfig
+            indexing_cfg = IndexingConfig()
+        self._cfg = indexing_cfg
 
     def save(self, chunks: list[Chunk], faiss_index: faiss.Index,
              embedder=None) -> None:
@@ -82,6 +87,9 @@ class IndexStore:
             qi = QuestionIndex.build(
                 chunks, embedder, prefix_role=_UQ_PREFIX_ROLE,
                 model=getattr(getattr(embedder, "cfg", None), "embedding_model", ""),
+                index_type=self._cfg.vector_index_type, m=self._cfg.hnsw_m,
+                ef_construction=self._cfg.hnsw_ef_construction,
+                ef_search=self._cfg.hnsw_ef_search,
             )
             if qi is not None:
                 qi.save(self.path / QuestionIndex.directory_name())
@@ -91,8 +99,9 @@ class IndexStore:
         # the wrong chunks if any chunk lacked coords (see CASE-08).
 
         logger.info(
-            "IndexStore saved: %d chunks, vectors %s → %s",
-            len(chunks), "x".join(map(str, matrix.shape)), self.path,
+            "IndexStore saved: %d chunks, vectors %s, index %s → %s",
+            len(chunks), "x".join(map(str, matrix.shape)),
+            describe(faiss_index), self.path,
         )
 
     def load(self) -> tuple[list[Chunk], faiss.Index]:
@@ -106,7 +115,11 @@ class IndexStore:
         with open(self.path / _CHUNKS_FILE, "rb") as fh:
             chunks: list[Chunk] = pickle.load(fh)
 
-        faiss_index = faiss.read_index(str(self.path / _FAISS_FILE))
+        # efSearch is baked into the index file; applying the configured value
+        # on load makes the recall/latency trade tunable without a rebuild.
+        faiss_index = apply_search_params(
+            faiss.read_index(str(self.path / _FAISS_FILE)),
+            self._cfg.hnsw_ef_search)
 
         vectors_path = self.path / _VECTORS_FILE
         if vectors_path.exists():
@@ -136,6 +149,7 @@ class IndexStore:
         return QuestionIndex.load(
             self.path / QuestionIndex.directory_name(),
             expect_role=_UQ_PREFIX_ROLE, expect_model=model,
+            ef_search=self._cfg.hnsw_ef_search,
         )
 
     def load_lexical(self) -> LexicalIndex | None:

@@ -41,6 +41,10 @@ from pathlib import Path
 import faiss
 import numpy as np
 
+from rag_system.store.vector_index import (
+    apply_search_params, build_vector_index, describe,
+)
+
 logger = logging.getLogger(__name__)
 
 _INDEX, _MAPPING, _META = "index.faiss", "to_chunk.npy", "meta.json"
@@ -61,7 +65,9 @@ class QuestionIndex:
 
     @classmethod
     def build(cls, chunks, embedder, prefix_role: str = "query",
-              model: str = "") -> "QuestionIndex | None":
+              model: str = "", *, index_type: str = "flat", m: int = 32,
+              ef_construction: int = 200, ef_search: int = 128
+              ) -> "QuestionIndex | None":
         """Embed every chunk's utility questions once, at index time.
 
         Returns None when no chunk carries questions, which is the normal case
@@ -77,10 +83,10 @@ class QuestionIndex:
             return None
 
         embs = embedder.embed(questions, kind=prefix_role).astype(np.float32)
-        index = faiss.IndexFlatIP(embs.shape[1])
-        index.add(embs)
-        logger.info("QuestionIndex: %d questions over %d chunks (%s role)",
-                    len(questions), len(chunks), prefix_role)
+        index = build_vector_index(embs, index_type=index_type, m=m,
+                                   ef_construction=ef_construction, ef_search=ef_search)
+        logger.info("QuestionIndex: %d questions over %d chunks (%s role, %s)",
+                    len(questions), len(chunks), prefix_role, describe(index))
         return cls(index, np.asarray(mapping, dtype=np.int32), prefix_role, model)
 
     def search(self, q_emb: np.ndarray, k: int):
@@ -98,11 +104,12 @@ class QuestionIndex:
         (d / _META).write_text(json.dumps({
             "prefix_role": self.prefix_role, "model": self.model,
             "dim": self.index.d, "questions": len(self),
+            "index_type": describe(self.index),
         }), encoding="utf-8")
 
     @classmethod
     def load(cls, directory: Path | str, expect_role: str = "query",
-             expect_model: str = "") -> "QuestionIndex | None":
+             expect_model: str = "", ef_search: int = 128) -> "QuestionIndex | None":
         d = Path(directory)
         if not (d / _META).exists():
             return None
@@ -122,7 +129,7 @@ class QuestionIndex:
                 "ignoring it. Re-index to persist vectors for the current model.",
                 meta["model"], expect_model)
             return None
-        index = faiss.read_index(str(d / _INDEX))
+        index = apply_search_params(faiss.read_index(str(d / _INDEX)), ef_search)
         to_chunk = np.load(d / _MAPPING)
         if index.ntotal != len(to_chunk):
             raise ValueError(

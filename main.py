@@ -42,7 +42,7 @@ class CLI:
             neo4j.close()
 
     def query(self, question: str) -> None:
-        chunks, faiss_index = IndexStore(self._cfg.store_path).load()
+        chunks, faiss_index = IndexStore(self._cfg.store_path, self._cfg.indexing).load()
         neo4j    = self._connect_neo4j()
         pipeline = QueryPipeline(self._cfg)
         try:

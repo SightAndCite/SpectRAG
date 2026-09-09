@@ -77,7 +77,7 @@ class ActiveIndex:
                 self.lexical = None
                 self.questions = None
                 return False
-            store = IndexStore(self._paths.session_dir(sid))
+            store = IndexStore(self._paths.session_dir(sid), self._cfg.indexing)
             chunks, faiss_index = store.load()
             self.lexical = store.load_lexical()
             self.questions = store.load_questions(self._cfg.ollama.embedding_model)
@@ -163,7 +163,7 @@ class IndexingService:
 
             # Count from the vector file's header rather than loading the whole
             # index and discarding it — this ran a full load purely for len().
-            store = IndexStore(self._paths.session_dir(sid))
+            store = IndexStore(self._paths.session_dir(sid), self._cfg.indexing)
             count = store.chunk_count()
             if count is None:                       # legacy index, no vectors.npy
                 count = len(store.load()[0])

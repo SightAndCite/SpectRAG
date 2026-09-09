@@ -17,6 +17,7 @@ from tenacity import (
 from rag_system.models import Chunk
 from rag_system.indexing.concurrency import bounded_imap_batches
 from rag_system.store.kv_cache import KeyValueCache, fingerprint
+from rag_system.store.vector_index import build_vector_index
 from config import OllamaConfig
 
 logger = logging.getLogger(__name__)
@@ -211,8 +212,10 @@ class OllamaEmbedder:
         for chunk, key in zip(chunks, keys):
             chunk.embedding = self._emb_cache.get(key)
 
-    def build_faiss_index(self, chunks: list[Chunk]) -> faiss.IndexFlatIP:
-        """Build an exact inner-product FAISS index from already-embedded chunks."""
+    def build_faiss_index(self, chunks: list[Chunk], *, index_type: str = "flat",
+                          m: int = 32, ef_construction: int = 200,
+                          ef_search: int = 128) -> faiss.Index:
+        """Build the chunk search index from already-embedded chunks."""
         missing = [c.chunk_id for c in chunks if c.embedding is None]
         if missing:
             raise ValueError(
@@ -222,6 +225,5 @@ class OllamaEmbedder:
         if not chunks:
             return faiss.IndexFlatIP(self._dim or self.cfg.embedding_dim)
         matrix = np.stack([c.embedding for c in chunks]).astype(np.float32)
-        index = faiss.IndexFlatIP(matrix.shape[1])   # use the real embedding dim
-        index.add(matrix)
-        return index
+        return build_vector_index(matrix, index_type=index_type, m=m,
+                                  ef_construction=ef_construction, ef_search=ef_search)
