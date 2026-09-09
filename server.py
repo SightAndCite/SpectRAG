@@ -16,6 +16,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from config import Config
 from rag_server.admission import AdmissionController, Overloaded, cap_native_threads
@@ -88,6 +89,18 @@ class SpectRAGServer:
         add("/api/sessions/{sid}/index",      self.index_documents, methods=["POST"])
         add("/api/sessions/{sid}/graph",      self.get_graph,       methods=["GET"])
         add("/api/sessions/{sid}/query",      self.query,           methods=["POST"])
+
+        # Serve the built frontend from the same origin when it exists, so
+        # `python server.py` alone gives a working UI. Mounted last so it never
+        # shadows an /api route. Without a build the API still runs on its own,
+        # and `npm run dev` proxies to it.
+        dist = Path(__file__).resolve().parent / "frontend" / "dist"
+        if (dist / "index.html").is_file():
+            app.mount("/", StaticFiles(directory=str(dist), html=True), name="ui")
+            logger.info("Serving frontend from %s", dist)
+        else:
+            logger.info("No frontend build at %s — API only. Run `npm run build` "
+                        "in frontend/, or `npm run dev` for the dev server.", dist)
         return app
 
     @asynccontextmanager

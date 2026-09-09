@@ -5,9 +5,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load environment variables from a .env file sitting next to this module,
-# so OPENAI_API_KEY (and friends) are available without exporting them manually.
-load_dotenv(Path(__file__).with_name(".env"))
+# Load environment variables from the nearest .env, searching this module's
+# directory and then upward. Looking only beside this file meant a .env one level
+# up — the usual place when the repo sits inside a workspace folder — was
+# silently ignored, and OPENAI_API_KEY read as unset with no hint why.
+def _load_env() -> None:
+    here = Path(__file__).resolve().parent
+    for directory in (here, *here.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            load_dotenv(candidate)
+            return
+
+
+_load_env()
 
 
 @dataclass
