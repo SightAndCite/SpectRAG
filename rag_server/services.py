@@ -121,6 +121,23 @@ class ActiveIndex:
             questions=self.questions,
         )
 
+    def release(self, corpus_id: str) -> bool:
+        """Drop this corpus if resident, so its files can be removed safely.
+
+        Chunk embeddings are VIEWS into a memory-mapped vectors.npy. Unlinking
+        that file while a reader holds the mapping leaves any page not already
+        resident undefined — it happens to keep working on macOS, which is
+        exactly how it would reach production unnoticed. Dropping the references
+        closes the mapping first.
+        """
+        with self._lock:
+            if self.corpus_id != corpus_id:
+                return False
+            self.corpus_id = self.generation = None
+            self.chunks = self.faiss_index = self.graph = None
+            self.chunk_id_to_idx = self.lexical = self.questions = None
+            return True
+
     def close(self) -> None:
         if self.pipeline:
             self.pipeline.close()
@@ -145,6 +162,12 @@ class IndexingService:
         self.stage:   str        = ""
         self.error:   str | None = None
         self.session: str | None = None
+        self.corpus:  str | None = None
+
+    def is_building(self, corpus_id: str) -> bool:
+        """True while a build is writing this corpus's directory."""
+        with self._lock:
+            return self.running and self.corpus == corpus_id
 
     @property
     def status(self) -> dict:
@@ -163,6 +186,7 @@ class IndexingService:
             self.error   = None
             self.stage   = "Starting…"
             self.session = sid
+            self.corpus = self._sessions.corpus_of(sid) or sid
         threading.Thread(target=self._run, args=(sid,), daemon=True).start()
 
     def _set_stage(self, msg: str) -> None:
@@ -188,7 +212,9 @@ class IndexingService:
 
             job_cfg = dataclasses.replace(self._cfg, store_path=staged)
             graph = InMemoryGraphStore()
-            IndexingPipeline(job_cfg, graph).index(files, progress_cb=self._set_stage)
+            IndexingPipeline(job_cfg, graph).index(
+                files, progress_cb=self._set_stage,
+                doc_root=self._paths.docs_dir(corpus_id))
             graph.save(staged / self._paths.GRAPH_FILE)
 
             store = IndexStore(staged, self._cfg.indexing)
@@ -232,6 +258,7 @@ class IndexingService:
         finally:
             with self._lock:
                 self.running = False
+                self.corpus  = None
                 self.stage   = ""
                 # Keep self.session pointing at this job so the UI can attribute
                 # the result (or error) to the right session after it finishes.

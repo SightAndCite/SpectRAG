@@ -108,6 +108,7 @@ class IndexingPipeline:
         self,
         paths: list[Path | str],
         progress_cb: ProgressCb | None = None,
+        doc_root: Path | str | None = None,
     ) -> IndexStore:
         def _report(msg: str) -> None:
             logger.info(msg)
@@ -122,7 +123,7 @@ class IndexingPipeline:
                 logger.error("File not found, skipping: %s", path)
                 continue
             _report(f"Chunking: {path.name}")
-            all_chunks.extend(self.chunker.chunk_file(path))
+            all_chunks.extend(self.chunker.chunk_file(path, doc_root=doc_root))
 
         if not all_chunks:
             raise ValueError("No chunks produced — check file paths and formats.")

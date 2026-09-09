@@ -303,10 +303,15 @@ class DocumentChunker:
 
     def _make_chunk(self, text: str, doc_id: str, position: int, meta: dict,
                     section_path: list[str], lang: str) -> Chunk:
-        # Include the source path so two files with the same stem (doc_id defaults
-        # to path.stem) can't collide into one chunk_id and silently drop a chunk.
+        # Identity is (document, position, content) and deliberately EXCLUDES the
+        # absolute path. It used to include it, to stop two files with the same
+        # stem colliding — but that made every chunk id change when a corpus was
+        # relocated, so a rebuild after a move produced an entirely new graph,
+        # question mapping and score keys for identical content. doc_id is now
+        # the path relative to the corpus document root, which distinguishes
+        # same-named files without depending on where the corpus lives.
         chunk_id = hashlib.sha256(
-            f"{meta.get('source', '')}:{doc_id}:{position}:{text[:self._hash_prefix]}".encode()
+            f"{doc_id}:{position}:{text[:self._hash_prefix]}".encode()
         ).hexdigest()[:16]
         return Chunk(
             chunk_id=chunk_id, doc_id=doc_id, text=text, position=position,
@@ -412,7 +417,33 @@ class DocumentChunker:
                 out.append(g)
         return self._merge_small(out)
 
-    def chunk_file(self, path: Path | str, doc_id: str | None = None) -> list[Chunk]:
+    @staticmethod
+    def document_id(path: Path, doc_root: Path | str | None = None) -> str:
+        """Stable identity for a document, independent of where the corpus lives.
+
+        The path relative to the corpus document root when it is under one, else
+        the file name. Both survive relocating the corpus; neither collides
+        between `notes.txt` and `notes.pdf`, or between files in different
+        subdirectories, the way the old `path.stem` did.
+        """
+        if doc_root is not None:
+            try:
+                return path.resolve().relative_to(Path(doc_root).resolve()).as_posix()
+            except ValueError:
+                pass                      # not under the root; fall back to the name
+        return path.name
+
+    @staticmethod
+    def content_digest(path: Path) -> str:
+        """Content hash of a document, for change detection across rebuilds."""
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()[:16]
+
+    def chunk_file(self, path: Path | str, doc_id: str | None = None,
+                   doc_root: Path | str | None = None) -> list[Chunk]:
         path = Path(path)
         suffix = path.suffix.lower()
         reader = _READERS.get(suffix)
@@ -421,8 +452,10 @@ class DocumentChunker:
             reader = _READERS[".txt"]
             suffix = ".txt"
 
-        doc_id = doc_id or path.stem
+        doc_id = doc_id or self.document_id(path, doc_root)
+        # Kept for display and provenance only — never part of chunk identity.
         source = str(path)
+        digest = self.content_digest(path)
 
         # Read as ordered (text, meta, kind) items. Tables are pulled out as their
         # own items for PDF/DOCX so prose-splitting never chops them.
@@ -439,7 +472,7 @@ class DocumentChunker:
         prev_tail = ""                       # overlap carried across boundaries
 
         for text, meta, kind in items:
-            meta = {**meta, "source": source}
+            meta = {**meta, "source": source, "doc_digest": digest}
             if kind == "table":
                 prev_tail = ""  # a table breaks the prose flow — don't bridge overlap
                 lang = self._detect_lang(text)

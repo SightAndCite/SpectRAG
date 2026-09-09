@@ -102,22 +102,28 @@ class SessionStore:
             self._save()
         return True
 
-    def delete(self, sid: str) -> bool:
+    def delete(self, sid: str) -> str | None:
+        """Remove a session. Returns the corpus id left with no readers, or None.
+
+        Deliberately does NOT remove corpus files: a build may be writing them
+        and a request may be reading them, including through memory-mapped
+        vectors whose pages become undefined once the file is unlinked. The
+        caller coordinates that (see SpectRAGServer.delete_session).
+        """
         with self._lock:
             if sid not in self._sessions:
-                return False
+                return None
             session = self._sessions.pop(sid)
             self._save()
-        # Only remove the corpus if no other session still reads it. Deleting a
-        # chat used to delete its documents and index unconditionally, which is
-        # wrong the moment two chats can share one corpus.
+        shutil.rmtree(self._paths.session_dir(sid), ignore_errors=True)
+
         corpus = (session or {}).get("corpus_id") or sid
         still_used = any((s.get("corpus_id") or s["id"]) == corpus
                          for s in self._sessions.values())
-        if not still_used:
-            shutil.rmtree(self._paths.corpus_dir(corpus), ignore_errors=True)
-        shutil.rmtree(self._paths.session_dir(sid), ignore_errors=True)
-        return True
+        return None if still_used else corpus
+
+    def exists(self, sid: str) -> bool:
+        return sid in self._sessions
 
     def set_index_meta(self, sid: str, chunk_count: int, docs: list[str]) -> None:
         with self._lock:

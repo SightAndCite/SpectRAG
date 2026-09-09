@@ -8,6 +8,7 @@ methods. Import ``app`` (or run ``python server.py``) to serve it.
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -132,10 +133,28 @@ class SpectRAGServer:
         return {"id": sid, "name": name}
 
     def delete_session(self, sid: str) -> dict:
-        if not self.sessions.delete(sid):
+        if not self.sessions.exists(sid):
             raise HTTPException(404, "Session not found.")
-        self.active.clear(self._corpus_of(sid))
-        return {"status": "deleted"}
+
+        # Refuse while a build is writing this corpus. Removing the directory
+        # underneath a running build corrupts the generation it is producing,
+        # and the build would go on writing into a deleted tree.
+        corpus = self._corpus_of(sid)
+        if self.indexer.is_building(corpus):
+            raise HTTPException(
+                409, "This corpus is being indexed — delete it once that finishes.")
+
+        orphaned = self.sessions.delete(sid)
+        if orphaned is None:
+            # Another session still reads the corpus; leave its files alone.
+            return {"status": "deleted"}
+
+        # Drop the resident copy BEFORE unlinking anything: chunk embeddings are
+        # views into a memory-mapped vectors.npy, and unlinking it while a reader
+        # holds the mapping leaves unfaulted pages undefined.
+        self.active.release(orphaned)
+        shutil.rmtree(self.paths.corpus_dir(orphaned), ignore_errors=True)
+        return {"status": "deleted", "corpus_removed": orphaned}
 
     def get_messages(self, sid: str) -> list:
         return self._require_session(sid)["messages"]
