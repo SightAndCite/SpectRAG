@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import Config
+from rag_server.admission import AdmissionController, Overloaded, cap_native_threads
 from rag_server.graph_view import GraphView
 from rag_server.runtime import ServerPaths
 from rag_server.schemas import CreateSessionBody, QueryBody
@@ -44,6 +45,13 @@ class SpectRAGServer:
 
     def __init__(self, cfg: Config | None = None) -> None:
         self.cfg = cfg or Config()
+        # Before anything sizes a thread pool.
+        cap_native_threads(self.cfg.server.native_threads_per_process)
+        self.admission = AdmissionController(
+            self.cfg.server.max_in_flight_queries,
+            self.cfg.server.max_waiting_queries,
+            self.cfg.server.admission_wait_timeout_s,
+        )
         self.paths = ServerPaths(self.cfg.store_path)
         self.sessions = SessionStore(self.paths, self.cfg.server.session_id_chars)
         self.active = ActiveIndex(self.cfg, self.paths)
@@ -110,6 +118,9 @@ class SpectRAGServer:
             "indexing_stage":   s["stage"],
             "indexing_session": s["session"],
             "index_error":      s["error"],
+            "in_flight":        self.admission.in_flight,
+            "waiting":          self.admission.waiting,
+            "admission":        self.admission.stats.as_dict(),
         }
 
     def list_sessions(self) -> list[dict]:
@@ -184,6 +195,17 @@ class SpectRAGServer:
         return self.graph_view.build_payload(self.active)
 
     def query(self, sid: str, body: QueryBody) -> dict:
+        # Admission is taken around the whole request, so the slot covers the
+        # retrieval buffers and inference the handler goes on to use.
+        try:
+            with self.admission.admit():
+                return self._query(sid, body)
+        except Overloaded as exc:
+            raise HTTPException(
+                503, str(exc), headers={"Retry-After": str(int(exc.retry_after))},
+            ) from exc
+
+    def _query(self, sid: str, body: QueryBody) -> dict:
         self._require_session(sid)
         # The previous generation keeps serving while the next one builds (F8),
         # so a build no longer blocks reads of the corpus it is rebuilding.

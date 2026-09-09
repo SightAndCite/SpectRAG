@@ -404,6 +404,25 @@ class ServerConfig:
         "http://localhost:5173",
         "http://localhost:3000",
     ])
+    # Admission control. Every earlier fix bounded what ONE query costs; nothing
+    # bounded the total, so N concurrent queries meant N times the per-query
+    # memory and overload appeared as memory growth rather than rejection.
+    #   max_in_flight   queries executing at once
+    #   max_waiting     queries allowed to wait for a slot; beyond this, 503
+    #   wait_timeout_s  how long a request may wait before it is refused
+    # Derive these from measured per-query memory and inference throughput (F12);
+    # the defaults are conservative, not measured.
+    max_in_flight_queries: int  = 8
+    max_waiting_queries: int    = 16
+    admission_wait_timeout_s: float = 5.0
+    # Cap per process, not per request. faiss and BLAS each default to one thread
+    # per core, so several concurrent queries ask for many times the core count
+    # and then contend; the indexing thread's pools come on top.
+    native_threads_per_process: int = 4
+    # Keep index-time inference below the total so queries retain headroom while
+    # a build runs in the same process.
+    builder_inference_share: float = 0.5
+
     max_viz_nodes: int       = 200   # node cap for the graph visualization endpoint
     node_label_chars: int    = 80    # chars of chunk text used as the node label
     source_preview_chars: int = 200  # chars shown in the sources panel

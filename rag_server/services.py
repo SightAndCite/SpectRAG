@@ -210,7 +210,21 @@ class IndexingService:
             gens = self._paths.generations(corpus_id)
             staged, gen_id = gens.stage()
 
-            job_cfg = dataclasses.replace(self._cfg, store_path=staged)
+            # Reserve headroom for queries: the builder shares this process and
+            # the same inference endpoint, so it takes a share of the configured
+            # concurrency rather than all of it.
+            share = max(0.0, min(1.0, self._cfg.server.builder_inference_share))
+            job_indexing = dataclasses.replace(
+                self._cfg.indexing,
+                llm_parallel_workers=max(1, int(self._cfg.indexing.llm_parallel_workers * share)),
+                llm_max_in_flight=max(1, int(self._cfg.indexing.llm_max_in_flight * share)),
+            )
+            job_ollama = dataclasses.replace(
+                self._cfg.ollama,
+                embed_max_concurrency=max(1, int(self._cfg.ollama.embed_max_concurrency * share)),
+            )
+            job_cfg = dataclasses.replace(self._cfg, store_path=staged,
+                                          indexing=job_indexing, ollama=job_ollama)
             graph = InMemoryGraphStore()
             IndexingPipeline(job_cfg, graph).index(
                 files, progress_cb=self._set_stage,
