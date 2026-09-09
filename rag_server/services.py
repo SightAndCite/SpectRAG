@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING
 
 from rag_system.indexing.pipeline import IndexingPipeline
 from rag_system.query.pipeline import QueryPipeline
-from rag_system.store.generation import Manifest
+from rag_system.store.generation import GenerationStore, Manifest
+
+
+def Manifest_checksums(staged, artifacts):
+    """Digest every declared artifact for the manifest."""
+    rels = [k.split(':', 1)[-1] for k in artifacts]
+    return GenerationStore.checksums_for(staged, rels)
+
 from rag_system.store.index_store import IndexStore
 from rag_system.store.memory_graph import InMemoryGraphStore
 from rag_server.runtime import ServerPaths
@@ -226,10 +233,14 @@ class IndexingService:
             job_cfg = dataclasses.replace(self._cfg, store_path=staged,
                                           indexing=job_indexing, ollama=job_ollama)
             graph = InMemoryGraphStore()
-            IndexingPipeline(job_cfg, graph).index(
+            pipeline = IndexingPipeline(job_cfg, graph)
+            pipeline.index(
                 files, progress_cb=self._set_stage,
                 doc_root=self._paths.docs_dir(corpus_id))
             graph.save(staged / self._paths.GRAPH_FILE)
+
+            # What GraphBuilder actually normalised with, for the manifest.
+            transforms = pipeline.graph_builder.transforms.to_dict()
 
             store = IndexStore(staged, self._cfg.indexing)
             count = store.chunk_count()
@@ -247,15 +258,12 @@ class IndexingService:
                 embedding_model=self._cfg.ollama.embedding_model,
                 vector_index_type=self._cfg.indexing.vector_index_type,
                 uq_prefix_role="query",
-                # Frozen so a later incremental delta can be scored on the same
-                # scale as this base; corpus-global extrema would otherwise
-                # rescale every published edge when a new maximum arrives.
-                score_transforms={
-                    "edge_sparsify_threshold": self._cfg.indexing.edge_sparsify_threshold,
-                    "shared_key_max_df_ratio": self._cfg.indexing.shared_key_max_df_ratio,
-                    "shared_key_max_df_abs": self._cfg.indexing.shared_key_max_df_abs,
-                    "shared_key_df_floor": self._cfg.indexing.shared_key_df_floor,
-                },
+                # The per-signal min/max GraphBuilder actually used, so a later
+                # delta lands on this base's scale. Configuration thresholds are
+                # inputs to the build; these are outputs of it, and only the
+                # outputs make an incremental update correct.
+                score_transforms=transforms,
+                checksums=Manifest_checksums(staged, artifacts),
             ))
 
             self._sessions.set_index_meta(

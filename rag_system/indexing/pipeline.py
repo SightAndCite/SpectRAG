@@ -109,6 +109,7 @@ class IndexingPipeline:
         paths: list[Path | str],
         progress_cb: ProgressCb | None = None,
         doc_root: Path | str | None = None,
+        frozen_transforms=None,
     ) -> IndexStore:
         def _report(msg: str) -> None:
             logger.info(msg)
@@ -170,9 +171,12 @@ class IndexingPipeline:
             edge_weights = self.cfg.edge_weights
 
         _report("Building graph…")
+        # A delta passes the base generation's transforms so its edges land on
+        # the same scale; a full build passes None and fits fresh ones, which
+        # `self.graph_builder.transforms` then reports for the manifest.
         graph = self.graph_builder.build(
             all_chunks, semantic, adjacency, section, entity, uq, citation,
-            weights=edge_weights,
+            weights=edge_weights, frozen=frozen_transforms,
         )
 
         # 5. Spectral decomposition

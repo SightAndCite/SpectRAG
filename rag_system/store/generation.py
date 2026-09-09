@@ -25,6 +25,7 @@ generation is what later lets a delta be scored on the same scale as the base.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -56,7 +57,13 @@ class Manifest:
     # Score transforms frozen at build time. Incremental updates cannot exist
     # while corpus-global extrema float, because a new extreme silently rescales
     # every edge already published.
+    #: Actual per-signal min/max used by GraphBuilder, not configuration. A
+    #: delta reuses these so its edges land on the base's scale; recomputing
+    #: extrema rescales every edge already published.
     score_transforms: dict = field(default_factory=dict)
+    #: Relative path -> sha256 prefix. Existence and declared counts do not
+    #: detect a truncated or corrupted artifact.
+    checksums: dict[str, str] = field(default_factory=dict)
     schema_version: int = 1
 
     def to_json(self) -> str:
@@ -111,6 +118,24 @@ class GenerationStore:
         return self.active() is not None
 
     # Writing
+
+    @staticmethod
+    def checksum(path: Path, chunk: int = 1 << 20) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(chunk), b""):
+                h.update(block)
+        return h.hexdigest()[:16]
+
+    @classmethod
+    def checksums_for(cls, staged: Path, relative_paths) -> dict[str, str]:
+        """Digest every artifact, for the manifest."""
+        out: dict[str, str] = {}
+        for rel in relative_paths:
+            f = staged / rel
+            if f.is_file():
+                out[rel] = cls.checksum(f)
+        return out
 
     def stage(self) -> tuple[Path, str]:
         """A fresh directory to build into. Not visible to readers until published."""
@@ -179,6 +204,17 @@ class GenerationStore:
             raise ValueError(
                 f"Generation {manifest.generation_id} is inconsistent: {bad} rows "
                 f"against {manifest.chunk_count} chunks. Not publishing."
+            )
+
+        # Content, not just presence. A file truncated or corrupted after it was
+        # written still exists and still has the declared row count in its header.
+        corrupt = [rel for rel, digest in manifest.checksums.items()
+                   if (staged / rel).is_file()
+                   and self.checksum(staged / rel) != digest]
+        if corrupt:
+            raise ValueError(
+                f"Generation {manifest.generation_id} failed its checksums: "
+                f"{corrupt}. Not publishing."
             )
 
     def prune(self) -> list[str]:

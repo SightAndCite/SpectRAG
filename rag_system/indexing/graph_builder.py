@@ -3,6 +3,7 @@ import logging
 import networkx as nx
 from rag_system.models import Chunk
 from rag_system.indexing.edges.base import RawEdge
+from rag_system.indexing.transforms import SignalTransform, TransformSet
 from config import Config, EdgeWeights
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,11 @@ class GraphBuilder:
     def __init__(self, cfg: Config) -> None:
         self.weights = cfg.edge_weights
         self.threshold = cfg.indexing.edge_sparsify_threshold
+        #: Transforms actually used by the last build, for the generation
+        #: manifest. Recomputing extrema on every build rescales every edge
+        #: already published when a stronger one arrives, which silently
+        #: rewrites the base graph's topology on an incremental update.
+        self.transforms = TransformSet()
 
     def build(
         self,
@@ -30,7 +36,14 @@ class GraphBuilder:
         utility_question: list[RawEdge],
         citation: list[RawEdge],
         weights: EdgeWeights | None = None,
+        frozen: TransformSet | None = None,
     ) -> nx.Graph:
+        """Combine the signals into one weighted graph.
+
+        `frozen` carries the transforms a previous generation was built with. A
+        delta reuses them so its edges land on the base's scale; a full build
+        passes None, fits fresh ones, and records them for the next delta.
+        """
         w = weights or self.weights
         signal_configs = [
             ("semantic",         semantic,         w.semantic),
@@ -43,8 +56,15 @@ class GraphBuilder:
 
         combined: dict[tuple[int, int], dict] = {}
 
+        # Copy so excursion counters are per build; `apply` mutates them.
+        carried = frozen.fresh() if frozen else None
+        used = TransformSet()
         for name, raw_edges, weight in signal_configs:
-            norm_map = _minmax_normalize(raw_edges)
+            transform = (carried.signals.get(name) if carried else None)
+            if transform is None:
+                transform = SignalTransform.fit(e.score for e in raw_edges)
+            used.signals[name] = transform
+            norm_map = _normalize_with(raw_edges, transform)
             for (i, j), score in norm_map.items():
                 if (i, j) not in combined:
                     combined[(i, j)] = {"weight": 0.0}
@@ -65,11 +85,32 @@ class GraphBuilder:
                 )
                 kept += 1
 
+        self.transforms = used
+        excursions = used.excursions()
+        if excursions:
+            # Clipped rather than widening the range, because widening is the
+            # rescale being avoided. Visible so drift can justify a rebuild.
+            logger.warning(
+                "Delta scores fell outside the frozen transform range and were "
+                "clipped: %s. Base edge weights are unchanged; a full rebuild "
+                "refits the range.", excursions)
         logger.info(
             "Graph: %d nodes, %d edges (dropped %d below threshold %.3f)",
             G.number_of_nodes(), kept, len(combined) - kept, self.threshold,
         )
         return G
+
+
+def _normalize_with(edges: list[RawEdge],
+                    transform: SignalTransform) -> dict[tuple[int, int], float]:
+    """Apply a fixed transform, keeping the strongest score per undirected pair."""
+    result: dict[tuple[int, int], float] = {}
+    for e in edges:
+        key = (min(e.i, e.j), max(e.i, e.j))
+        norm = transform.apply(e.score)
+        if norm > result.get(key, -1.0):
+            result[key] = norm
+    return result
 
 
 def _minmax_normalize(edges: list[RawEdge]) -> dict[tuple[int, int], float]:
