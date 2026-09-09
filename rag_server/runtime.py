@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rag_system.store.generation import GenerationStore
+
 
 class ServerPaths:
     """Resolves every on-disk path the server uses, from a single store dir."""
@@ -34,6 +36,26 @@ class ServerPaths:
     def graph_file(self, sid: str) -> Path:
         return self.session_dir(sid) / self.GRAPH_FILE
 
+    def generations(self, sid: str) -> GenerationStore:
+        return GenerationStore(self.session_dir(sid))
+
+    def active_index_dir(self, sid: str) -> Path | None:
+        """Directory holding this session's published index, or None.
+
+        Resolves the generation manifest; callers should resolve once and reuse
+        the path, so a publication mid-request cannot move files underneath them.
+        Falls back to the flat legacy layout for indexes built before generations.
+        """
+        act = self.generations(sid).active()
+        if act is not None:
+            return act[0]
+        legacy = self.session_dir(sid)
+        return legacy if (legacy / self.CHUNKS_FILE).exists() else None
+
     def has_index(self, sid: str) -> bool:
-        """True once a session has been indexed (its chunk store exists on disk)."""
-        return (self.session_dir(sid) / self.CHUNKS_FILE).exists()
+        """True once a session has a COMPLETE published index.
+
+        Previously this tested only for chunks.pkl, so a build interrupted
+        between artifact writes read as ready.
+        """
+        return self.active_index_dir(sid) is not None

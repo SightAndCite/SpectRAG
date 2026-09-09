@@ -9,6 +9,7 @@ from rag_system.models import Chunk
 from rag_system.store.lexical_index import LexicalIndex
 from rag_system.store.question_index import QuestionIndex
 from rag_system.store.vector_index import apply_search_params, describe
+from rag_system.store.lexical_index import LexicalIndex as _LI
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,29 @@ class IndexStore:
             len(chunks), "x".join(map(str, matrix.shape)),
             describe(faiss_index), self.path,
         )
+        return self.artifacts()
+
+    def artifacts(self) -> dict[str, int]:
+        """Every file this store wrote, for manifest validation.
+
+        Enumerated after a successful save, so it is a declaration of what the
+        build produced — anything missing at publication time is then detectable.
+        Listing only marker files was not enough: a missing lexical/ids.npy would
+        have passed while lexical/meta.json was present, publishing a broken index.
+
+        A "chunk:" prefix marks an artifact whose row count must equal the chunk
+        count; -1 means existence is the only requirement.
+        """
+        found: dict[str, int] = {}
+        for f in sorted(self.path.rglob("*")):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(self.path).as_posix()
+            if rel == _VECTORS_FILE:
+                found[f"chunk:{rel}"] = int(np.load(f, mmap_mode="r").shape[0])
+            else:
+                found[rel] = -1
+        return found
 
     def load(self) -> tuple[list[Chunk], faiss.Index]:
         for fname in (_CHUNKS_FILE, _FAISS_FILE):

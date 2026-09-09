@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 import threading
 from typing import TYPE_CHECKING
 
 from rag_system.indexing.pipeline import IndexingPipeline
 from rag_system.query.pipeline import QueryPipeline
+from rag_system.store.generation import Manifest
 from rag_system.store.index_store import IndexStore
 from rag_system.store.memory_graph import InMemoryGraphStore
 from rag_server.runtime import ServerPaths
@@ -77,12 +79,15 @@ class ActiveIndex:
                 self.lexical = None
                 self.questions = None
                 return False
-            store = IndexStore(self._paths.session_dir(sid), self._cfg.indexing)
+            index_dir = self._paths.active_index_dir(sid)
+            if index_dir is None:
+                return False
+            store = IndexStore(index_dir, self._cfg.indexing)
             chunks, faiss_index = store.load()
             self.lexical = store.load_lexical()
             self.questions = store.load_questions(self._cfg.ollama.embedding_model)
             graph = InMemoryGraphStore()
-            graph.load(self._paths.graph_file(sid))
+            graph.load(index_dir / self._paths.GRAPH_FILE)
             self.sid = sid
             self.chunks = chunks
             self.faiss_index = faiss_index
@@ -154,19 +159,44 @@ class IndexingService:
             if not files:
                 raise RuntimeError("No documents to index for this session.")
 
-            # Per-job config that writes the index into this session's dir — a
-            # copy (nested configs shared), so the shared cfg is never mutated.
-            job_cfg = dataclasses.replace(self._cfg, store_path=self._paths.session_dir(sid))
+            # Build into a staging directory that no reader can see. The current
+            # generation keeps serving throughout, and a build that dies part-way
+            # leaves nothing published.
+            gens = self._paths.generations(sid)
+            staged, gen_id = gens.stage()
+
+            job_cfg = dataclasses.replace(self._cfg, store_path=staged)
             graph = InMemoryGraphStore()
             IndexingPipeline(job_cfg, graph).index(files, progress_cb=self._set_stage)
-            graph.save(self._paths.graph_file(sid))
+            graph.save(staged / self._paths.GRAPH_FILE)
 
-            # Count from the vector file's header rather than loading the whole
-            # index and discarding it — this ran a full load purely for len().
-            store = IndexStore(self._paths.session_dir(sid), self._cfg.indexing)
+            store = IndexStore(staged, self._cfg.indexing)
             count = store.chunk_count()
-            if count is None:                       # legacy index, no vectors.npy
+            if count is None:
                 count = len(store.load()[0])
+
+            self._set_stage("Publishing…")
+            artifacts = store.artifacts()
+            artifacts[self._paths.GRAPH_FILE] = -1
+            gens.publish(staged, Manifest(
+                generation_id=gen_id,
+                created_at=time.time(),
+                chunk_count=count,
+                artifacts=artifacts,
+                embedding_model=self._cfg.ollama.embedding_model,
+                vector_index_type=self._cfg.indexing.vector_index_type,
+                uq_prefix_role="query",
+                # Frozen so a later incremental delta can be scored on the same
+                # scale as this base; corpus-global extrema would otherwise
+                # rescale every published edge when a new maximum arrives.
+                score_transforms={
+                    "edge_sparsify_threshold": self._cfg.indexing.edge_sparsify_threshold,
+                    "shared_key_max_df_ratio": self._cfg.indexing.shared_key_max_df_ratio,
+                    "shared_key_max_df_abs": self._cfg.indexing.shared_key_max_df_abs,
+                    "shared_key_df_floor": self._cfg.indexing.shared_key_df_floor,
+                },
+            ))
+
             self._sessions.set_index_meta(
                 sid, chunk_count=count, docs=[p.name for p in files])
 
@@ -175,6 +205,7 @@ class IndexingService:
             self._active.ensure_loaded(sid)
         except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
             logger.exception("Indexing failed for session %s", sid)
+            self._paths.generations(sid).discard_staging()
             with self._lock:
                 self.error = str(exc)
         finally:
