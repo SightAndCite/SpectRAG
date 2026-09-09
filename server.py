@@ -89,6 +89,10 @@ class SpectRAGServer:
         yield
         self.active.close()
 
+    def _corpus_of(self, sid: str) -> str:
+        """The corpus this chat reads. Several chats may share one."""
+        return self.sessions.corpus_of(sid) or sid
+
     def _require_session(self, sid: str) -> dict:
         """Resolve a session or raise 404 — shared by every /sessions/{sid}/… route."""
         session = self.sessions.get(sid)
@@ -130,7 +134,7 @@ class SpectRAGServer:
     def delete_session(self, sid: str) -> dict:
         if not self.sessions.delete(sid):
             raise HTTPException(404, "Session not found.")
-        self.active.clear(sid)
+        self.active.clear(self._corpus_of(sid))
         return {"status": "deleted"}
 
     def get_messages(self, sid: str) -> list:
@@ -145,7 +149,7 @@ class SpectRAGServer:
 
         # Save uploads into the session's permanent docs/ dir, then (re)index the
         # whole dir so new documents are ADDED to the session, not replacing it.
-        docs = self.paths.docs_dir(sid)
+        docs = self.paths.docs_dir(self._corpus_of(sid))
         docs.mkdir(parents=True, exist_ok=True)
         for upload in files:
             name = Path(upload.filename or f"file_{uuid.uuid4().hex[:8]}").name
@@ -156,15 +160,15 @@ class SpectRAGServer:
 
     def get_graph(self, sid: str) -> dict:
         self._require_session(sid)
-        if not self.active.ensure_loaded(sid) or self.active.graph is None:
+        if not self.active.ensure_loaded(self._corpus_of(sid)) or self.active.graph is None:
             raise HTTPException(400, "This session has no index yet. Upload documents first.")
         return self.graph_view.build_payload(self.active)
 
     def query(self, sid: str, body: QueryBody) -> dict:
         self._require_session(sid)
-        if self.indexer.running and self.indexer.session == sid:
-            raise HTTPException(409, "Indexing in progress — please wait.")
-        if not self.active.ensure_loaded(sid) or self.active.chunks is None:
+        # The previous generation keeps serving while the next one builds (F8),
+        # so a build no longer blocks reads of the corpus it is rebuilding.
+        if not self.active.ensure_loaded(self._corpus_of(sid)) or self.active.chunks is None:
             raise HTTPException(400, "This session has no index yet. Upload documents first.")
 
         result = self.active.query(body.question)

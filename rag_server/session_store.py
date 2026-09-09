@@ -46,6 +46,10 @@ class SessionStore:
             name = (name or "").strip() or f"Session {len(self._sessions) + 1}"
             self._sessions[sid] = {
                 "id":          sid,
+                # A new chat still gets its own corpus, so nothing about the
+                # existing flow changes. The difference is that a corpus is now a
+                # separate resource another session can reference.
+                "corpus_id":   sid,
                 "name":        name,
                 "messages":    [],
                 "created_at":  datetime.now(timezone.utc).isoformat(),
@@ -54,7 +58,7 @@ class SessionStore:
             }
             self._save()
         self._paths.docs_dir(sid).mkdir(parents=True, exist_ok=True)
-        return {"id": sid, "name": name}
+        return {"id": sid, "name": name, "corpus_id": sid}
 
     def _summary(self, d: dict) -> dict:
         return {
@@ -62,10 +66,11 @@ class SessionStore:
             "name":          d["name"],
             "message_count": len(d["messages"]),
             "created_at":    d["created_at"],
+            "corpus_id":     d.get("corpus_id") or d["id"],
             "chunk_count":   d.get("chunk_count", 0),
             "doc_count":     len(d.get("docs", [])),
             "docs":          d.get("docs", []),
-            "has_index":     self._paths.has_index(d["id"]),
+            "has_index":     self._paths.has_index(d.get("corpus_id") or d["id"]),
         }
 
     def list_all(self) -> list[dict]:
@@ -73,6 +78,14 @@ class SessionStore:
 
     def get(self, sid: str) -> dict | None:
         return self._sessions.get(sid)
+
+    def corpus_of(self, sid: str) -> str | None:
+        """Which corpus a session reads. Sessions written before corpora existed
+        have none recorded, and read the corpus that shares their id."""
+        s = self._sessions.get(sid)
+        if s is None:
+            return None
+        return s.get("corpus_id") or sid
 
     def detail(self, sid: str) -> dict | None:
         d = self._sessions.get(sid)
@@ -93,8 +106,16 @@ class SessionStore:
         with self._lock:
             if sid not in self._sessions:
                 return False
-            del self._sessions[sid]
+            session = self._sessions.pop(sid)
             self._save()
+        # Only remove the corpus if no other session still reads it. Deleting a
+        # chat used to delete its documents and index unconditionally, which is
+        # wrong the moment two chats can share one corpus.
+        corpus = (session or {}).get("corpus_id") or sid
+        still_used = any((s.get("corpus_id") or s["id"]) == corpus
+                         for s in self._sessions.values())
+        if not still_used:
+            shutil.rmtree(self._paths.corpus_dir(corpus), ignore_errors=True)
         shutil.rmtree(self._paths.session_dir(sid), ignore_errors=True)
         return True
 

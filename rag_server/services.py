@@ -34,7 +34,11 @@ class ActiveIndex:
     def __init__(self, cfg: Config, paths: ServerPaths) -> None:
         self._cfg = cfg
         self._paths = paths
-        self.sid:          str | None                = None
+        # Keyed by CORPUS GENERATION, not by session: two chats over the same
+        # documents share one loaded index, and switching between them reloads
+        # nothing. Keying on the session reloaded ~14 GB at 1M for no reason.
+        self.corpus_id:    str | None                = None
+        self.generation:   str | None                = None
         self.chunks:       list[Chunk] | None        = None
         self.faiss_index:  faiss.Index | None        = None
         self.graph:        InMemoryGraphStore | None  = None
@@ -46,17 +50,19 @@ class ActiveIndex:
         self.lexical = None
         self.questions = None
         self._lock = threading.Lock()
+        self.loads = 0          # observability: how often we actually read from disk
 
     def _get_pipeline(self) -> QueryPipeline:
         if self.pipeline is None:
             self.pipeline = QueryPipeline(self._cfg)
         return self.pipeline
 
-    def clear(self, sid: str | None = None) -> None:
-        """Drop the in-memory index. If sid is given, only clear when it matches."""
+    def clear(self, corpus_id: str | None = None) -> None:
+        """Drop the in-memory index. If a corpus is given, only clear when it matches."""
         with self._lock:
-            if sid is None or self.sid == sid:
-                self.sid = None
+            if corpus_id is None or self.corpus_id == corpus_id:
+                self.corpus_id = None
+                self.generation = None
                 self.chunks = None
                 self.faiss_index = None
                 self.graph = None
@@ -64,14 +70,22 @@ class ActiveIndex:
                 self.lexical = None
                 self.questions = None
 
-    def ensure_loaded(self, sid: str) -> bool:
-        """Load ``sid``'s index into memory (from disk) if not already active.
-        Returns True if a usable index is loaded, False if the session has none."""
+    def ensure_loaded(self, corpus_id: str) -> bool:
+        """Load a corpus's published generation, if not already resident.
+
+        Returns True if a usable index is loaded, False if the corpus has none.
+        A different session reading the SAME corpus generation is already served
+        by what is resident, so it does no I/O at all.
+        """
         with self._lock:
-            if self.sid == sid and self.chunks is not None:
+            gen = self._paths.generations(corpus_id).active()
+            gen_id = gen[1].generation_id if gen else None
+            if (self.corpus_id == corpus_id and self.generation == gen_id
+                    and self.chunks is not None):
                 return True
-            if not self._paths.has_index(sid):
-                self.sid = sid
+            if not self._paths.has_index(corpus_id):
+                self.corpus_id = corpus_id
+                self.generation = None
                 self.chunks = None
                 self.faiss_index = None
                 self.graph = None
@@ -79,16 +93,18 @@ class ActiveIndex:
                 self.lexical = None
                 self.questions = None
                 return False
-            index_dir = self._paths.active_index_dir(sid)
+            index_dir = self._paths.active_index_dir(corpus_id)
             if index_dir is None:
                 return False
             store = IndexStore(index_dir, self._cfg.indexing)
             chunks, faiss_index = store.load()
             self.lexical = store.load_lexical()
             self.questions = store.load_questions(self._cfg.ollama.embedding_model)
+            self.loads += 1
             graph = InMemoryGraphStore()
             graph.load(index_dir / self._paths.GRAPH_FILE)
-            self.sid = sid
+            self.corpus_id = corpus_id
+            self.generation = gen_id
             self.chunks = chunks
             self.faiss_index = faiss_index
             self.graph = graph
@@ -154,15 +170,20 @@ class IndexingService:
             self.stage = msg
 
     def _run(self, sid: str) -> None:
+        # Indexing operates on the CORPUS the session reads, which may be shared
+        # with other sessions. Publishing a generation makes it visible to all of
+        # them at once.
+        corpus_id = self._sessions.corpus_of(sid) or sid
         try:
-            files = sorted(p for p in self._paths.docs_dir(sid).glob("*") if p.is_file())
+            files = sorted(p for p in self._paths.docs_dir(corpus_id).glob("*")
+                           if p.is_file())
             if not files:
                 raise RuntimeError("No documents to index for this session.")
 
             # Build into a staging directory that no reader can see. The current
             # generation keeps serving throughout, and a build that dies part-way
             # leaves nothing published.
-            gens = self._paths.generations(sid)
+            gens = self._paths.generations(corpus_id)
             staged, gen_id = gens.stage()
 
             job_cfg = dataclasses.replace(self._cfg, store_path=staged)
@@ -201,11 +222,11 @@ class IndexingService:
                 sid, chunk_count=count, docs=[p.name for p in files])
 
             # Refresh the in-memory cache if this session is the active one.
-            self._active.clear(sid)
-            self._active.ensure_loaded(sid)
+            self._active.clear(corpus_id)
+            self._active.ensure_loaded(corpus_id)
         except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
             logger.exception("Indexing failed for session %s", sid)
-            self._paths.generations(sid).discard_staging()
+            self._paths.generations(corpus_id).discard_staging()
             with self._lock:
                 self.error = str(exc)
         finally:
