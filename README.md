@@ -49,7 +49,7 @@ Instead of retrieving only the top-ranked chunks by semantic similarity, SpectRA
 SpectRAG runs an **offline pass** that builds a weighted chunk graph and its spectral structure, then a **query-time pass** that expands, diffuses, and selects a context set before generation:
 
 <p align="center">
-  <img src="assets/pipeline.png" alt="SpectRAG pipeline — offline indexing / graph construction and online query-time retrieval" width="100%">
+  <img src="assets/online-offline-main-pipeline.png" alt="SpectRAG pipeline — offline indexing / graph construction and online query-time retrieval" width="100%">
 </p>
 
 ---
