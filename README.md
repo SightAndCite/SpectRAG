@@ -226,9 +226,17 @@ SpectRAG/
 ---
 
 ## Citation
-
-Citation information will be added after the arXiv preprint is released.
-
+```
+@misc{sahinoglu2026spectragweightedchunkgraphs,
+      title={SpectRAG: Weighted Chunk Graphs for Token-Budgeted Context Selection in Multi-Hop Retrieval-Augmented Generation}, 
+      author={Zafer Sahinoglu and Abdulazeez Mohammed and Buse Yaren Kazangirler and Cahit Berkay Kazangirler},
+      year={2026},
+      eprint={2610.36991},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2610.36991}, 
+}
+```
 ## License
 
 Released under the [MIT License](LICENSE) — © 2026 The SpectRAG Authors.
