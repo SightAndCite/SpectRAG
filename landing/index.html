@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpectRAG — Spectral Graph-Augmented Retrieval</title>
+  <meta name="description" content="SpectRAG augments dense retrieval with a weighted chunk graph and its spectral structure, selecting context that is relevant, non-redundant, connected and sufficient for multi-hop reasoning." />
+  <link rel="icon" type="image/png" href="img/logo-256.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ───────────────────────── Nav ───────────────────────── -->
+<header class="nav">
+  <a class="brand" href="#top">
+    <img src="img/logo-256.png" alt="" width="34" height="34" />
+    <span>SpectRAG</span>
+  </a>
+  <nav class="nav-links" aria-label="Sections">
+    <a href="#problem">Why</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#signals">Graph</a>
+    <a href="#spectral">Spectral</a>
+    <a href="#results">Results</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">Paper ↗</a>
+  </nav>
+  <a class="btn btn-light btn-sm" href="https://github.com/SightAndCite/SpectRAG" target="_blank" rel="noopener">
+    GitHub <span aria-hidden="true">→</span>
+  </a>
+</header>
+
+<!-- ───────────────────────── Hero ───────────────────────── -->
+<section class="hero" id="top">
+  <div class="glow" aria-hidden="true"></div>
+  <canvas id="heroNet" class="hero-net" aria-hidden="true"></canvas>
+
+  <div class="hero-inner">
+    <a class="pill" href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">
+      <span class="pill-tag">arXiv</span>
+      <span class="pill-text">2610.36991 · Weighted Chunk Graphs for Token-Budgeted Context Selection</span>
+      <span class="pill-arrow" aria-hidden="true">→</span>
+    </a>
+
+    <h1 class="hero-title">
+      <span class="line">Top-k finds similar.</span>
+      <span class="line">SpectRAG finds <span class="logo-chip"><img src="img/logo-256.png" alt="" /></span> enough.</span>
+    </h1>
+
+    <p class="hero-sub">
+      Dense retrieval returns the chunks that look most like your question.
+      SpectRAG adds a <strong><span class="ico">◇</span> weighted chunk graph</strong> and its
+      <strong><span class="ico">∿</span> spectral structure</strong>, then picks a context set that is
+      relevant, non-redundant, connected and <strong><span class="ico">✓</span> sufficient for multi-hop answers</strong>.
+    </p>
+
+    <div class="hero-ctas">
+      <a class="btn btn-light" href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">
+        <span class="mono">📄</span> Read the paper <span aria-hidden="true">→</span></a>
+      <a class="btn btn-ghost" href="https://github.com/SightAndCite/SpectRAG" target="_blank" rel="noopener">
+        <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Official repository</a>
+    </div>
+    <p class="hero-links">
+      <a href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">arxiv.org/abs/2610.36991</a>
+      <span>·</span>
+      <a href="https://github.com/SightAndCite/SpectRAG" target="_blank" rel="noopener">github.com/SightAndCite/SpectRAG</a>
+    </p>
+
+    <div class="hero-stats">
+      <div><b data-count="71.2">71.2</b><span>Exact match on MultiHopRAG, best of 5 systems</span></div>
+      <div><b data-count="91.8">91.8</b><span>Gold-evidence recall, +15.7 pts over the next best</span></div>
+      <div><b>−83%</b><span>Index size vs LightRAG (46 MB vs 274 MB)</span></div>
+    </div>
+  </div>
+
+  <!-- App mockup -->
+  <div class="window mock" aria-label="SpectRAG app preview">
+    <div class="win-bar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="win-session"><span class="sq">L</span> legal-corpus <svg class="caret" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span class="win-path">🔒 30 docs · 412 chunks · 2,381 edges</span>
+      <span class="win-right"><span class="chip-sm">Graph</span><span class="chip-sm on">Chat</span></span>
+    </div>
+    <div class="mock-body">
+      <aside class="mock-side">
+        <div class="search">⌕ Search sessions</div>
+        <div class="side-label">Sessions</div>
+        <div class="sess"><span class="hash">#</span><div><b>ultradomain-agri</b><small>Crop rotation and soil carbon…</small></div><time>9:41</time></div>
+        <div class="sess active"><span class="hash">◇</span><div><b>legal-corpus</b><small>Which obligations survive…</small></div><time>10:04</time></div>
+        <div class="sess"><span class="hash">◇</span><div><b>musique-dev</b><small>No questions yet</small></div><time></time></div>
+        <div class="side-label">Sources in this session</div>
+        <div class="src"><i style="--c:#38bdf8"></i>Supplier_Agreement.pdf</div>
+        <div class="src"><i style="--c:#a78bfa"></i>Licence_Terms.docx</div>
+        <div class="src"><i style="--c:#f472b6"></i>DPA_Addendum.pdf</div>
+        <div class="src"><i style="--c:#34d399"></i>Case_Law_Digest.html</div>
+      </aside>
+
+      <div class="mock-chat">
+        <div class="day">Today 10:02</div>
+        <div class="msg">
+          <span class="av av-user">B</span>
+          <div><b>You</b> <time>10:02</time>
+            <p>Which obligations survive termination across the supplier and licence agreements?</p></div>
+        </div>
+        <div class="sys">◇ Retrieved 13 chunks from 4 sources · 9,840 / 12,000 tokens</div>
+        <div class="msg">
+          <span class="av av-bot"><img src="img/logo-256.png" alt="" /></span>
+          <div><b>SpectRAG</b> <time>10:03</time>
+            <p>Three obligation groups survive in both contracts. <b>Confidentiality</b> continues for five years
+              <span class="cite" style="--c:#38bdf8">S1</span>, and the licence extends it to source code
+              <span class="cite" style="--c:#a78bfa">S2</span>. <b>Data return and deletion</b> is governed by the DPA,
+              which the supplier agreement incorporates by reference <span class="cite" style="--c:#f472b6">S3</span>.
+              <b>Liability caps</b> survive, but courts read them narrowly <span class="cite" style="--c:#34d399">S4</span>.</p>
+            <div class="sources">
+              <span><i style="--c:#38bdf8"></i>Supplier §14.3</span>
+              <span><i style="--c:#a78bfa"></i>Licence §9</span>
+              <span><i style="--c:#f472b6"></i>DPA §11</span>
+              <span><i style="--c:#34d399"></i>Digest p.4</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="mock-trace">
+        <div class="trace-head"><span>Retrieval trace</span><span class="status">● Done · 1.8s</span></div>
+        <h4>legal-corpus · q#17</h4>
+        <ol class="trace">
+          <li><span class="n">1</span><div><b>Hybrid seeds</b><small>RRF(dense, BM25, utility-Q)</small></div><em>20</em></li>
+          <li><span class="n">2</span><div><b>Graph expansion</b><small>Neo4j BFS · 2 hops</small></div><em>186</em></li>
+          <li><span class="n">3</span><div><b>Proximity re-score</b><small>½ spectral + ½ PPR · α 0.5</small></div><em>186</em></li>
+          <li><span class="n">4</span><div><b>Token-budget select</b><small>precision-gated + backfill</small></div><em>13</em></li>
+          <li><span class="n">5</span><div><b>Generation</b><small>grouped by source · temp 0</small></div><em>✓</em></li>
+        </ol>
+        <div class="budget">
+          <div class="budget-row"><span>Context budget</span><span class="mono">9,840 / 12,000</span></div>
+          <div class="bar"><i style="width:82%"></i></div>
+          <div class="budget-row dim"><span>Naive top-k would cover</span><span class="mono">1 source</span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <p class="mock-note">Illustrative session. The interface is the React + D3 app in <span class="mono">frontend/</span>.</p>
+</section>
+
+<!-- ───────────────────────── Problem (animated) ───────────────────────── -->
+<section class="section" id="problem">
+  <div class="section-head">
+    <span class="eyebrow">The problem</span>
+    <h2>A ranking isn't a context.</h2>
+    <p>Top-k scores every chunk on its own. It keeps picking near-duplicates from the closest document and
+      skips the chunk that links to the second half of the answer. SpectRAG chooses the <em>set</em> as a whole.</p>
+  </div>
+
+  <div class="card compare-anim">
+    <svg id="cmpSvg" viewBox="0 0 960 540" role="img"
+         aria-label="Animation: naive top-k fills six context slots with near-duplicates from one document, SpectRAG fills them with chunks from three documents linked by graph edges"></svg>
+    <div class="cmp-foot">
+      <div class="verdict">
+        <span class="tag tag-muted">Naive RAG</span>
+        <span class="bad">1 source</span><span class="bad">4 near-duplicates</span><span class="bad">no second hop</span>
+      </div>
+      <div class="verdict">
+        <span class="tag">SpectRAG</span>
+        <span class="good">3 sources</span><span class="good">redundancy filtered</span><span class="good">bridge chunk reached</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Pipeline explorer ───────────────────────── -->
+<section class="section" id="pipeline">
+  <div class="section-head">
+    <span class="eyebrow">Pipeline explorer</span>
+    <h2>Watch every stage run.</h2>
+    <p>A toy corpus of 72 chunks from 6 documents is indexed and queried in your browser with the same steps the
+      code runs. Graph edges, Personalized PageRank, the Laplacian eigenvectors and k-means are all computed live.</p>
+  </div>
+
+  <div class="explorer card">
+    <div class="ex-top">
+      <div class="seg" role="tablist">
+        <button class="seg-btn on" data-track="offline" role="tab">① Offline · Indexing</button>
+        <button class="seg-btn" data-track="online" role="tab">② Online · Query</button>
+      </div>
+      <div class="ex-controls">
+        <button class="icon-btn" id="exPrev" aria-label="Previous step">‹</button>
+        <button class="icon-btn play" id="exPlay" aria-label="Play or pause">❚❚</button>
+        <button class="icon-btn" id="exNext" aria-label="Next step">›</button>
+      </div>
+    </div>
+
+    <div class="ex-grid">
+      <ol class="ex-steps" id="exSteps"></ol>
+
+      <div class="ex-stage">
+        <canvas id="exCanvas"></canvas>
+        <div class="ex-legend" id="exLegend"></div>
+        <div class="ex-query" id="exQuery" hidden>
+          <span class="q-ico">?</span>
+          <span>Which obligations survive termination across the supplier and licence agreements?</span>
+        </div>
+      </div>
+
+      <div class="ex-info" id="exInfo"></div>
+    </div>
+    <div class="ex-progress"><i id="exProgress"></i></div>
+  </div>
+
+  <details class="figure">
+    <summary>Show the full architecture figure from the paper</summary>
+    <img src="img/pipeline.jpg" alt="SpectRAG offline indexing and online query-time retrieval pipeline" loading="lazy" />
+  </details>
+</section>
+
+<!-- ───────────────────────── Signals ───────────────────────── -->
+<section class="section" id="signals">
+  <div class="section-head">
+    <span class="eyebrow">The weighted chunk graph</span>
+    <h2>Six signals. One edge weight.</h2>
+    <p>Every signal links chunks for its own reason. Each is min-max normalised, the six are blended with weights
+      that sum to 1, and edges with <span class="mono">W &lt; 0.1</span> are dropped. Hover a signal to see only its edges.</p>
+  </div>
+
+  <div class="signals">
+    <div class="card sig-canvas-wrap">
+      <canvas id="sigCanvas"></canvas>
+      <div class="sig-caption" id="sigCaption">All signals · colored by strongest contributor</div>
+    </div>
+    <div class="sig-side">
+      <div class="weights card">
+        <div class="weights-head"><span>EdgeWeights</span><span class="mono dim">config.py · Σ = 1.000</span></div>
+        <div class="stack" id="weightStack"></div>
+        <div class="formula">W(i,j) = Σ<sub>k</sub> w<sub>k</sub> · norm<sub>k</sub>(i,j)</div>
+      </div>
+      <div class="sig-cards" id="sigCards"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Spectral ───────────────────────── -->
+<section class="section" id="spectral">
+  <div class="spectral card">
+    <div class="spec-text">
+      <span class="eyebrow">Spectral structure</span>
+      <h2>Coordinates from the graph's own shape.</h2>
+      <p>The normalised Laplacian of the chunk graph is decomposed once, at index time. Its smallest non-trivial
+        eigenvectors give each chunk a 32-dimensional coordinate that encodes which community it belongs to.
+        Two chunks can be far apart in embedding space and still sit next to each other here.</p>
+      <div class="formula big">L = I − D<sup>−½</sup> W D<sup>−½</sup></div>
+      <ul class="spec-facts">
+        <li><b>32</b> eigenvectors kept; the trivial constant one is dropped</li>
+        <li><b>ARPACK</b> up to 50k nodes, <b>LOBPCG</b> above that</li>
+        <li><b>Multiplex</b> mode: L = Σ β<sub>k</sub> L<sub>k</sub>, one normalised layer per signal</li>
+        <li>Offline <b>k-means</b> (k = 5) labels reused at query time</li>
+      </ul>
+      <div class="spec-toggle seg">
+        <button class="seg-btn on" data-view="graph">Graph layout</button>
+        <button class="seg-btn" data-view="spectral">Spectral embedding</button>
+      </div>
+    </div>
+    <div class="spec-viz">
+      <canvas id="specCanvas"></canvas>
+      <div class="eig" id="eigReadout"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Diffusion (animated, t slider) ───────────────────────── -->
+<section class="section" id="diffusion">
+  <div class="section-head">
+    <span class="eyebrow">Proximity re-scoring</span>
+    <h2>Relevance flows along real edges.</h2>
+    <p>Starting from the seeds, relevance spreads over the chunk graph. Drag <span class="mono">t</span> to watch it
+      reach chunks that share no words with the question but are linked to the ones that do.
+      The heat kernel <span class="mono">e<sup>−tL</sup></span> is computed from the same eigenvectors as above.</p>
+  </div>
+  <div class="card diff-card">
+    <canvas id="diffCanvas"></canvas>
+    <div class="diff-ui">
+      <div class="diff-row">
+        <button class="icon-btn play" id="diffPlay" aria-label="Play or pause">❚❚</button>
+        <input type="range" id="diffT" min="0" max="4" step="0.01" value="0" aria-label="Diffusion time t" />
+        <span class="mono diff-t" id="diffTLabel">t = 0.00</span>
+      </div>
+      <div class="formula">combined(c) = (1 − α)·relevance(c) + α·proximity(c) &nbsp;·&nbsp; α = 0.5</div>
+      <div class="diff-legend"><span>cold</span><i class="ramp"></i><span>hot</span>
+        <span class="sep"></span><span class="seed-dot"></span><span>seed</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Results ───────────────────────── -->
+<section class="section" id="results">
+  <div class="section-head">
+    <span class="eyebrow">Results · from the paper</span>
+    <h2>Better answers from a smaller index.</h2>
+    <p>Every system uses the same generator. Numbers are taken from the
+      <a href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">SpectRAG paper</a> (Tables 4, 6, 7 and 8).</p>
+  </div>
+
+  <div class="sys-legend" id="sysLegend"></div>
+
+  <div class="charts">
+    <figure class="card chart" data-chart="em">
+      <figcaption><h3>Best end-to-end accuracy, by an honest margin</h3>
+        <p>Exact match (%) on 2,556 MultiHopRAG questions.</p></figcaption>
+      <svg viewBox="0 0 640 330"></svg>
+      <small class="src">Source: SpectRAG paper, Table 7. F1 and "contains" give the same ordering.</small>
+    </figure>
+
+    <figure class="card chart" data-chart="recall">
+      <figcaption><h3>Keeps finding evidence the deeper you look</h3>
+        <p>Gold-evidence recall (%) on MultiHopRAG. Hybrid leads at the top ranks; SpectRAG wins on breadth.</p></figcaption>
+      <svg viewBox="0 0 640 330"></svg>
+      <small class="src">Source: SpectRAG paper, Table 6. "All" = recall of the full retrieved context.</small>
+    </figure>
+
+    <figure class="card chart" data-chart="qtype">
+      <figcaption><h3>Biggest win where evidence must be connected</h3>
+        <p>Exact match (%) by MultiHopRAG question type. Large dot = SpectRAG.</p></figcaption>
+      <svg viewBox="0 0 640 330"></svg>
+      <small class="src">Source: SpectRAG paper, Table 8. Null = unanswerable; higher means correct abstention.</small>
+    </figure>
+
+    <figure class="card chart" data-chart="index">
+      <figcaption><h3>A ~6× smaller index, fewer nodes on every corpus</h3>
+        <p>Left: full index on MultiHopRAG. Right: graph nodes (chunks vs LLM-extracted entities).</p></figcaption>
+      <svg viewBox="0 0 640 330"></svg>
+      <small class="src">Source: SpectRAG paper, Table 4.</small>
+    </figure>
+  </div>
+
+  <details class="ablation card">
+    <summary>
+      <span><b>Ablation · Stage-4 selection study (Legal)</b>
+        <small>13 variants judged pairwise vs NaiveRAG. Above 50% = SpectRAG preferred.</small></span>
+      <span class="chev">⌄</span>
+    </summary>
+    <div class="results">
+      <div class="res-chart" id="resChart"></div>
+      <div class="res-notes">
+        <div class="stat"><b>60%</b><span>token_budget win rate vs NaiveRAG. It is now the production default.</span></div>
+        <div class="stat"><b>~35%</b><span>of relevant chunks the original greedy selector dropped to force diversity</span></div>
+        <p class="caveat">n = 20 questions on 30 documents, so one question moves the score 5 points. Treat the 60 vs 55 lead as weak evidence.</p>
+      </div>
+    </div>
+  </details>
+</section>
+
+<!-- ───────────────────────── Stack ───────────────────────── -->
+<section class="section" id="stack">
+  <div class="section-head">
+    <span class="eyebrow">Stack</span>
+    <h2>Runs on your machine.</h2>
+    <p>Embeddings run locally through Ollama. Switch two config flags and indexing is fully local too: no API key, no cost.</p>
+  </div>
+  <div class="stack-grid">
+    <div class="tile"><span>Embeddings</span><b>nomic-embed-text</b><small>Ollama · 768-dim</small></div>
+    <div class="tile"><span>Vector index</span><b>FAISS IndexFlatIP</b><small>exact cosine</small></div>
+    <div class="tile"><span>Lexical</span><b>BM25</b><small>rank-bm25 · RRF fused</small></div>
+    <div class="tile"><span>Graph store</span><b>Neo4j</b><small>Bolt · Cypher BFS</small></div>
+    <div class="tile"><span>Spectral</span><b>SciPy</b><small>ARPACK / LOBPCG</small></div>
+    <div class="tile"><span>Index-time LLM</span><b>gpt-4o-mini</b><small>or llama3.1:8b / spaCy</small></div>
+    <div class="tile"><span>Rerank (opt.)</span><b>MiniLM cross-encoder</b><small>ms-marco-L-6-v2</small></div>
+    <div class="tile"><span>App</span><b>FastAPI + React</b><small>Vite · D3 v7</small></div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Quickstart ───────────────────────── -->
+<section class="section" id="quickstart">
+  <div class="quick">
+    <div class="section-head left">
+      <span class="eyebrow">Quickstart</span>
+      <h2>From folder to answer in four commands.</h2>
+      <p>Python 3.11, Ollama, Docker and Node 18+. Neo4j starts by itself the first time the server runs.
+        Full instructions are in the <a href="https://github.com/SightAndCite/SpectRAG#setup" target="_blank" rel="noopener">official repository</a>.</p>
+      <div class="seg" id="termTabs">
+        <button class="seg-btn on" data-tab="setup">Setup</button>
+        <button class="seg-btn" data-tab="cli">CLI</button>
+        <button class="seg-btn" data-tab="server">Server</button>
+      </div>
+    </div>
+    <div class="terminal window">
+      <div class="win-bar"><span class="dots"><i></i><i></i><i></i></span><span class="win-path">~/SpectRAG — zsh</span>
+        <button class="copy" data-copy="term">Copy</button></div>
+      <pre id="term"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── Citation ───────────────────────── -->
+<section class="section" id="cite">
+  <div class="cite-card card">
+    <div>
+      <span class="eyebrow">Cite</span>
+      <h3>SpectRAG: Weighted Chunk Graphs for Token-Budgeted Context Selection in Multi-Hop Retrieval-Augmented Generation</h3>
+      <p class="dim">Zafer Sahinoglu · Abdulazeez Mohammed · Buse Yaren Kazangirler · Cahit Berkay Kazangirler — 2026</p>
+      <div class="cite-links">
+        <a class="btn btn-light btn-sm" href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">📄 Research paper · arXiv:2610.36991</a>
+        <a class="btn btn-ghost btn-sm" href="https://github.com/SightAndCite/SpectRAG" target="_blank" rel="noopener">Official SpectRAG repository</a>
+      </div>
+    </div>
+    <div class="bib">
+      <button class="copy" data-copy="bibtex">Copy BibTeX</button>
+<pre id="bibtex">@misc{sahinoglu2026spectragweightedchunkgraphs,
+  title={SpectRAG: Weighted Chunk Graphs for Token-Budgeted
+         Context Selection in Multi-Hop Retrieval-Augmented Generation},
+  author={Zafer Sahinoglu and Abdulazeez Mohammed and
+          Buse Yaren Kazangirler and Cahit Berkay Kazangirler},
+  year={2026},
+  eprint={2610.36991},
+  archivePrefix={arXiv},
+  primaryClass={cs.AI},
+  url={https://arxiv.org/abs/2610.36991},
+}</pre>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="brand"><img src="img/logo-256.png" alt="" width="28" height="28" /><span>SpectRAG</span></div>
+  <span class="dim">MIT License · © 2026 The SpectRAG Authors · Sight &amp; Cite</span>
+  <span class="foot-links">
+    <a href="https://arxiv.org/abs/2610.36991" target="_blank" rel="noopener">Paper</a>
+    <a href="https://github.com/SightAndCite/SpectRAG" target="_blank" rel="noopener">GitHub</a>
+  </span>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
